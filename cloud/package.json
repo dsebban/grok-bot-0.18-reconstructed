@@ -1,0 +1,48 @@
+{
+  "name": "grokbot-cloud",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Grok Bot on Cloudflare: the reconstructed Grok Bot UI from frontend/, with bots powered by pi-durable in Durable Objects",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
+    "test": "vitest run --config test/vitest.config.ts",
+    "e2e": "node e2e/run.mjs"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "1.10.1",
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0",
+    "@tiptap/core": "3.14.0",
+    "@tiptap/extension-link": "3.14.0",
+    "@tiptap/extension-mention": "3.14.0",
+    "@tiptap/extension-placeholder": "3.14.0",
+    "@tiptap/pm": "3.14.0",
+    "@tiptap/react": "3.14.0",
+    "@tiptap/starter-kit": "3.14.0",
+    "@tiptap/suggestion": "3.14.0",
+    "agents": "0.27.0",
+    "react": "19.2.1",
+    "react-dom": "19.2.1",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.63.0",
+    "@cloudflare/vitest-plugin": "1.3.7",
+    "@cloudflare/workers-types": "^5.20261008.1",
+    "@electron/asar": "4.2.1",
+    "@types/node": "^22.20.5",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.1.2",
+    "playwright-core": "^1.64.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vitest": "4.1.11",
+    "wrangler": "4.148.0"
+  }
+}

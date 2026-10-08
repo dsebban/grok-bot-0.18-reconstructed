@@ -1,0 +1,9 @@
+/*
+ * Browser adaptations for the desktop renderer. In Electron, drag regions
+ * move the window and let clicks reach the controls beneath them; a browser
+ * has no window to drag, so make them transparent to the pointer.
+ */
+.sand-cover-drag,
+[class*="sand-cover-drag"] {
+  pointer-events: none !important;
+}
