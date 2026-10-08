@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "GrokBot Cloud: a Grok Bot\u2013style agent on pi-durable, hosted in Cloudflare Durable Objects",
+  "description": "GrokBot Cloud: a Grok Bot–style agent on pi-durable, hosted in Cloudflare Durable Objects",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -11,9 +11,7 @@
     "deploy": "vite build && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config test/vitest.config.ts",
-    "e2e": "node e2e/run.mjs",
-    "build:web": "vite build --config vite.web.config.ts",
-    "vercel:output": "node scripts/vercel-output.mjs"
+    "e2e": "node e2e/run.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "^1.1.0",

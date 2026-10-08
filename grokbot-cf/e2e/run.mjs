@@ -2,14 +2,9 @@
 // workerd, real Durable Objects, SQLite and alarms), then a headless Chromium
 // driving the real UI. Uses the offline demo model, so it needs no account.
 //
-//   node e2e/run.mjs [--no-build] [--headed] [--web]
-//
-// --web serves the UI the way Vercel does (the `.vercel/output` built for
-// `vercel deploy --prebuilt`) from a second origin, so every scenario runs
-// cross-origin against the Worker with ALLOWED_ORIGINS enforced.
+//   node e2e/run.mjs [--no-build] [--headed]
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
-import http from "node:http";
 import path from "node:path";
 import { chromium } from "playwright-core";
 
@@ -17,9 +12,6 @@ const root = path.resolve(import.meta.dirname, "..");
 const args = new Set(process.argv.slice(2));
 const PORT = 8799;
 const BASE = `http://127.0.0.1:${PORT}`;
-const WEB = args.has("--web");
-const WEB_PORT = 8800;
-const APP = WEB ? `http://127.0.0.1:${WEB_PORT}` : BASE;
 const artifacts = path.join(root, "e2e", "artifacts");
 const persist = path.join(artifacts, "state");
 const CHROMIUM = process.env.CHROMIUM_PATH ?? (fs.existsSync("/opt/pw-browsers/chromium") ? "/opt/pw-browsers/chromium" : undefined);
@@ -31,41 +23,12 @@ if (!args.has("--no-build")) {
   console.log("› vite build");
   execSync("npx vite build", { cwd: root, stdio: "inherit" });
 }
-if (WEB) {
-  console.log("› web build (Vercel output)");
-  execSync("npx vite build --config vite.web.config.ts", {
-    cwd: root,
-    stdio: "inherit",
-    env: { ...process.env, VITE_GROKBOT_API_URL: BASE }
-  });
-  execSync("node scripts/vercel-output.mjs", { cwd: root, stdio: "inherit" });
-}
-
-/** Serves .vercel/output like Vercel: static files first, then the SPA fallback. */
-function startWebServer() {
-  const staticDir = path.join(root, ".vercel/output/static");
-  const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
-  const server = http.createServer((request, response) => {
-    const pathname = decodeURIComponent(new URL(request.url, APP).pathname);
-    let file = path.join(staticDir, pathname);
-    if (!file.startsWith(staticDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      file = path.join(staticDir, "index.html");
-    }
-    response.writeHead(200, { "content-type": types[path.extname(file)] ?? "application/octet-stream" });
-    fs.createReadStream(file).pipe(response);
-  });
-  return new Promise((resolve) => server.listen(WEB_PORT, "127.0.0.1", () => resolve(server)));
-}
 
 // The built config, minus the remote AI binding (needs a Cloudflare login),
 // with the offline demo model as the default.
 const built = JSON.parse(fs.readFileSync(path.join(root, "dist/grokbot/wrangler.json"), "utf8"));
 delete built.ai;
-built.vars = {
-  ...built.vars,
-  DEFAULT_MODEL: "demo/grokbot-demo",
-  ...(WEB ? { ALLOWED_ORIGINS: APP } : {})
-};
+built.vars = { ...built.vars, DEFAULT_MODEL: "demo/grokbot-demo" };
 const configPath = path.join(root, "dist/grokbot/wrangler.e2e.json");
 fs.writeFileSync(configPath, JSON.stringify(built, null, 2));
 
@@ -130,9 +93,7 @@ async function transcript(thread = "1") {
 }
 
 let browser;
-let webServer;
 try {
-  if (WEB) webServer = await startWebServer();
   console.log("› wrangler dev");
   server = startServer();
   await waitForServer();
@@ -153,8 +114,7 @@ try {
 
   console.log("› scenarios");
   await step("loads the app and connects", async () => {
-    await page.goto(`${APP}/#/${bot}/1`);
-    if (WEB && new URL(page.url()).origin === BASE) throw new Error("web mode must load the UI from its own origin");
+    await page.goto(`${BASE}/#/${bot}/1`);
     await page.getByTestId("status").filter({ hasText: "Connected" }).waitFor();
     await page.getByText("What can I do for you?").waitFor();
     const models = await page.getByTestId("model-picker").locator("option").allTextContents();
@@ -288,43 +248,6 @@ try {
     await page.getByTestId("memory-item").filter({ hasText: "teal" }).waitFor();
   });
 
-  if (WEB) {
-    await step("Worker refuses origins outside ALLOWED_ORIGINS", async () => {
-      const ok = await fetch(`${BASE}/api/bots/${bot}/threads`, { headers: { origin: APP } });
-      if (ok.status !== 200 || ok.headers.get("access-control-allow-origin") !== APP) throw new Error(`allowed origin: ${ok.status}`);
-      const preflight = await fetch(`${BASE}/api/config`, { method: "OPTIONS", headers: { origin: APP } });
-      if (preflight.status !== 204) throw new Error(`preflight: ${preflight.status}`);
-      const evil = await fetch(`${BASE}/api/bots/${bot}/threads`, { headers: { origin: "https://evil.example" } });
-      if (evil.status !== 403) throw new Error(`foreign origin: ${evil.status}`);
-      const upgrade = (origin) =>
-        new Promise((resolve, reject) => {
-          const request = http.request(`${BASE}/agents/grok-bot/${bot}`, {
-            headers: {
-              origin,
-              connection: "Upgrade",
-              upgrade: "websocket",
-              "sec-websocket-version": "13",
-              "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="
-            }
-          });
-          request.on("upgrade", (response, socket) => {
-            socket.destroy();
-            resolve(response.statusCode);
-          });
-          request.on("response", (response) => {
-            response.resume();
-            resolve(response.statusCode);
-          });
-          request.on("error", reject);
-          request.end();
-        });
-      const foreign = await upgrade("https://evil.example");
-      if (foreign !== 403) throw new Error(`foreign socket: ${foreign}`);
-      const own = await upgrade(APP);
-      if (own !== 101) throw new Error(`allowed socket: ${own}`);
-    });
-  }
-
   const unexpected = consoleErrors.filter((text) => !/WebSocket|ERR_CONNECTION|Failed to load resource/.test(text));
   await step("no unexpected browser console errors", async () => {
     if (unexpected.length) throw new Error(unexpected.join("\n"));
@@ -334,9 +257,8 @@ try {
   if (!results.length || results.at(-1).ok) console.error(error);
 } finally {
   await browser?.close();
-  webServer?.close();
   stopServer();
   fs.writeFileSync(path.join(artifacts, "results.json"), JSON.stringify(results, null, 2));
   const passed = results.filter((r) => r.ok).length;
-  console.log(`\n${WEB ? "[web/Vercel mode] " : ""}${passed}/${results.length} e2e steps passed${process.exitCode ? " (FAILED)" : ""}`);
+  console.log(`\n${passed}/${results.length} e2e steps passed${process.exitCode ? " (FAILED)" : ""}`);
 }

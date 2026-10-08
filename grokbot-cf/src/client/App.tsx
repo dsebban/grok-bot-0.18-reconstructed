@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { isThreadId, modelKey, parseModelKey, ROOT_THREAD, type UsageInfo } from "../shared/protocol";
-import { apiUrl } from "./api";
 import { Chat } from "./Chat";
 import { Panels } from "./Panels";
 import { useBot } from "./useBot";
@@ -90,7 +89,7 @@ function Workspace({ route, navigate, token, onUnauthorized }: {
 
   useEffect(() => {
     if (status === "closed" && token) {
-      fetch(apiUrl(`/api/bots/${route.bot}/threads`), { headers: { authorization: `Bearer ${token}` } })
+      fetch(`/api/bots/${route.bot}/threads`, { headers: { authorization: `Bearer ${token}` } })
         .then((response) => response.status === 401 && onUnauthorized())
         .catch(() => undefined);
     }
@@ -245,7 +244,7 @@ function App() {
   const [needsToken, setNeedsToken] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch(apiUrl("/api/config"))
+    fetch("/api/config")
       .then((response) => response.json() as Promise<{ auth: boolean }>)
       .then((config) => setNeedsToken(config.auth))
       .catch(() => setNeedsToken(false));

@@ -70,61 +70,45 @@ can do: `remember that …`, `write /notes/x.md: …`, `fetch https://…`,
 
 ## Deploy
 
-### With GitHub Actions (Cloudflare + Vercel)
+Everything runs on Cloudflare. One Worker serves the bots (Durable Objects),
+the API, and the UI as static assets, all on the same origin.
+
+### With GitHub Actions
 
 [`.github/workflows/deploy-grokbot.yml`](../.github/workflows/deploy-grokbot.yml)
 runs on every push to `main` that touches `grokbot-cf/`. You can also run it
-by hand (**Actions → Deploy GrokBot → Run workflow**) with a target of `all`,
-`cloudflare` or `vercel`. It runs three jobs:
+by hand from **Actions → Deploy GrokBot**. It has two jobs:
 
-1. **verify**: typecheck, the workerd tests, and both e2e suites. One suite
-   serves the UI from the Worker; the other serves it Vercel-style from a
-   second origin.
-2. **deploy-cloudflare**: `wrangler deploy` of the Worker. That covers the
-   bots (Durable Objects), the API, and the UI as Worker assets. Secrets go
-   up in the same version. A smoke test hits `/api/health`.
-3. **deploy-vercel**: builds the UI against the Worker's URL, writes Vercel's
-   Build Output (`.vercel/output`, with the SPA fallback), and runs
-   `vercel deploy --prebuilt --prod`. A smoke test checks it.
+1. **verify**: typecheck, the workerd tests, and the browser e2e suite.
+2. **deploy-cloudflare**: `wrangler deploy`, with secrets uploaded in the
+   same version. A smoke test then checks `/api/health` and the UI.
 
-Set these in **Settings → Environments**:
+In **Settings → Environments → `cloudflare-production`**, set:
 
-| Environment | Secrets | Variables (optional) |
+| Kind | Name | |
 | --- | --- | --- |
-| `cloudflare-production` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (required). `GROKBOT_TOKEN` (recommended). `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (optional). | `GROKBOT_DEFAULT_MODEL`, `GROKBOT_ALLOWED_ORIGINS` |
-| `vercel-production` | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | `GROKBOT_API_URL`: the Worker URL, needed only for Vercel-only runs or a custom domain |
-
-Setting it up once:
-
-1. Create a Cloudflare API token from the **Edit Cloudflare Workers** template.
-   Workers AI needs no extra setup.
-2. Create an empty Vercel project. Then run `npx vercel link` locally, or copy
-   the ids from the project settings. `.vercel/project.json` holds
-   `orgId` / `projectId`.
-3. After the first deploy, set `GROKBOT_ALLOWED_ORIGINS` to the Vercel
-   production URL, e.g. `https://grokbot.vercel.app`. The Worker then accepts
-   browser calls and sockets only from that origin and its own.
+| Secret | `CLOUDFLARE_API_TOKEN` | Required. Create it from the **Edit Cloudflare Workers** template. |
+| Secret | `CLOUDFLARE_ACCOUNT_ID` | Required. |
+| Secret | `GROKBOT_TOKEN` | Recommended. The access token the UI, API and sockets require. |
+| Secret | `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Optional. Enable direct providers. |
+| Variable | `GROKBOT_DEFAULT_MODEL` | Optional. Model for new threads. |
+| Variable | `GROKBOT_URL` | Optional. The public URL, if you use a custom domain instead of workers.dev. |
 
 ### By hand
 
 ```sh
 pnpm install
 npx wrangler login
-pnpm run deploy                                    # Worker: bots, API and UI
+pnpm run deploy
 npx wrangler secret put GROKBOT_TOKEN
-
-# Optional: the UI on Vercel too
-VITE_GROKBOT_API_URL=https://grokbot.<you>.workers.dev pnpm build:web
-pnpm vercel:output && npx vercel deploy --prebuilt --prod
 ```
 
-Optional secrets and vars:
+Settings:
 
 | Name | Purpose |
 | --- | --- |
-| `DEFAULT_MODEL` (var) | Model for new threads, as `provider/model-id`. Default `cloudflare/@cf/moonshotai/kimi-k2.7-code`. |
+| `DEFAULT_MODEL` (var) | Model for new threads, `provider/model-id`. Default `cloudflare/@cf/moonshotai/kimi-k2.7-code`. |
 | `GROKBOT_TOKEN` (secret) | Require this token on every API call and socket. The UI asks for it once. |
-| `ALLOWED_ORIGINS` (var) | Comma-separated browser origins allowed besides the Worker's own. Unset allows any origin. |
 | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` (secrets) | Enable those providers directly. |
 
 **Set `GROKBOT_TOKEN` on any public deployment.** Without it, anyone with the
@@ -152,7 +136,6 @@ message is durable. Passing your own `operationId` makes retries idempotent.
 pnpm typecheck
 pnpm test           # 19 tests in workerd against real Durable Objects
 pnpm e2e            # 14 browser steps against `wrangler dev`
-node e2e/run.mjs --web   # 15 steps with the UI on a second origin, served like Vercel
 ```
 
 The suites cover:

@@ -7,7 +7,6 @@ import type {
   ThreadId,
   ToolInfo
 } from "../shared/protocol";
-import { socketUrl } from "./api";
 import { EMPTY_VIEW, reduceAll, type ThreadView } from "../shared/view";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
@@ -18,8 +17,9 @@ type Command = ClientMessage extends infer M ? (M extends unknown ? Omit<M, "id"
 
 const EMPTY_STATE: BotState = { threads: [], memory: [], files: [], automations: [] };
 
-function threadSocketUrl(bot: string, thread: ThreadId, token: string | null): string {
-  const url = new URL(socketUrl(`/agents/grok-bot/${encodeURIComponent(bot)}`));
+function socketUrl(bot: string, thread: ThreadId, token: string | null): string {
+  const url = new URL(`/agents/grok-bot/${encodeURIComponent(bot)}`, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("thread", thread);
   if (token) url.searchParams.set("token", token);
   return url.toString();
@@ -55,7 +55,7 @@ export function useBot(bot: string, thread: ThreadId, token: string | null) {
     const open = () => {
       if (disposed) return;
       setStatus("connecting");
-      const ws = new WebSocket(threadSocketUrl(bot, thread, token));
+      const ws = new WebSocket(socketUrl(bot, thread, token));
       socket.current = ws;
       ws.onopen = () => {
         attempt = 0;
