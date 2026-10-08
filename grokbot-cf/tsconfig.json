@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "types": ["@cloudflare/workers-types", "vite/client"]
   },
-  "include": ["src", "test", "env.d.ts", "vite.config.ts"]
+  "include": ["src", "test", "env.d.ts", "vite.config.ts", "vite.web.config.ts"]
 }

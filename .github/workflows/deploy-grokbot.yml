@@ -1,0 +1,273 @@
+# Deploys GrokBot Cloud (grokbot-cf/):
+#
+#   verify             typecheck, workerd tests, and both e2e suites (Worker-served UI and Vercel-style UI)
+#   deploy-cloudflare  the Worker: bots (Durable Objects), API, and the UI as Worker assets
+#   deploy-vercel      the same UI as a static app on Vercel, pointed at the Worker
+#
+# Configure under Settings → Environments (or repository-wide):
+#
+#   Environment "cloudflare-production"
+#     secrets  CLOUDFLARE_API_TOKEN   (required) token with "Edit Cloudflare Workers" permissions
+#              CLOUDFLARE_ACCOUNT_ID  (required)
+#              GROKBOT_TOKEN          (recommended) access token the API, sockets and UI require
+#              OPENROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY  (optional) direct providers
+#     vars     GROKBOT_DEFAULT_MODEL    (optional) e.g. cloudflare/@cf/moonshotai/kimi-k2.7-code
+#              GROKBOT_ALLOWED_ORIGINS  (optional) comma-separated origins allowed to call the Worker,
+#                                       e.g. https://grokbot.vercel.app — unset allows any origin
+#
+#   Environment "vercel-production"
+#     secrets  VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID  (required)
+#     vars     GROKBOT_API_URL  (optional) the Worker's URL; required only when deploying Vercel alone
+#              or when the Worker is served from a custom domain instead of workers.dev
+
+name: Deploy GrokBot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "grokbot-cf/**"
+      - ".github/workflows/deploy-grokbot.yml"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to deploy
+        type: choice
+        options: [all, cloudflare, vercel]
+        default: all
+      skip_e2e:
+        description: Skip the browser e2e suites (unit tests still run)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-grokbot-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: grokbot-cf
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.28.0"
+  VERCEL_CLI: "vercel@59.23.2"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: grokbot-cf/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit and Durable Object tests (workerd)
+        run: pnpm test
+      - name: Install Chromium
+        if: ${{ !inputs.skip_e2e }}
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: E2E — UI served by the Worker
+        if: ${{ !inputs.skip_e2e }}
+        run: node e2e/run.mjs
+      - name: E2E — UI served cross-origin, as on Vercel
+        if: ${{ !inputs.skip_e2e }}
+        run: node e2e/run.mjs --web
+      - name: Upload e2e artifacts
+        if: ${{ failure() && !inputs.skip_e2e }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            grokbot-cf/e2e/artifacts/*.png
+            grokbot-cf/e2e/artifacts/*.json
+            grokbot-cf/e2e/artifacts/*.log
+          retention-days: 7
+
+  deploy-cloudflare:
+    name: Deploy bots + app to Cloudflare
+    needs: verify
+    if: ${{ (github.event_name == 'workflow_dispatch' && (inputs.target == 'all' || inputs.target == 'cloudflare')) || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: cloudflare-production
+      url: ${{ steps.deploy.outputs.url }}
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check configuration
+        working-directory: .
+        env:
+          HAS_GROKBOT_TOKEN: ${{ secrets.GROKBOT_TOKEN != '' }}
+        run: |
+          missing=()
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing+=(CLOUDFLARE_API_TOKEN)
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing secrets in the cloudflare-production environment: ${missing[*]}"
+            exit 1
+          fi
+          if [ "$HAS_GROKBOT_TOKEN" != "true" ]; then
+            echo "::warning::GROKBOT_TOKEN is not set: anyone with the URL can use the bot and your Workers AI quota."
+          fi
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: grokbot-cf/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build Worker and UI
+        run: pnpm build
+      - name: Write secrets file
+        env:
+          GROKBOT_TOKEN: ${{ secrets.GROKBOT_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          node -e '
+            const names = ["GROKBOT_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
+            const secrets = Object.fromEntries(names.filter((n) => process.env[n]).map((n) => [n, process.env[n]]));
+            require("fs").writeFileSync(process.env.RUNNER_TEMP + "/grokbot-secrets.json", JSON.stringify(secrets), { mode: 0o600 });
+            console.log("Secrets to upload: " + (Object.keys(secrets).join(", ") || "none"));
+          '
+      - name: Deploy with Wrangler
+        id: deploy
+        env:
+          DEFAULT_MODEL: ${{ vars.GROKBOT_DEFAULT_MODEL }}
+          ALLOWED_ORIGINS: ${{ vars.GROKBOT_ALLOWED_ORIGINS }}
+          API_URL_OVERRIDE: ${{ vars.GROKBOT_API_URL }}
+        run: |
+          args=(deploy --secrets-file "$RUNNER_TEMP/grokbot-secrets.json")
+          [ -n "$DEFAULT_MODEL" ] && args+=(--var "DEFAULT_MODEL:$DEFAULT_MODEL")
+          [ -n "$ALLOWED_ORIGINS" ] && args+=(--var "ALLOWED_ORIGINS:$ALLOWED_ORIGINS")
+          pnpm exec wrangler "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/wrangler-deploy.log"
+          status=${PIPESTATUS[0]}
+          rm -f "$RUNNER_TEMP/grokbot-secrets.json"
+          [ "$status" -eq 0 ] || exit "$status"
+          url="$API_URL_OVERRIDE"
+          if [ -z "$url" ]; then
+            url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/wrangler-deploy.log" | head -n1 || true)
+          fi
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+          echo "Worker URL: ${url:-unknown (set the GROKBOT_API_URL variable for custom domains)}"
+      - name: Smoke test
+        if: ${{ steps.deploy.outputs.url != '' }}
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS "$URL/api/health" | grep -q '"ok":true'; then
+              curl -fsS "$URL/api/config" | head -c 400; echo
+              curl -fsS "$URL/" | grep -q '<div id="root">' && echo "UI served at $URL"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::$URL/api/health did not answer"
+          exit 1
+      - name: Summary
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          {
+            echo "### Cloudflare"
+            echo "- Worker (bots, API, UI): ${URL:-see the deploy log}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-vercel:
+    name: Deploy app to Vercel
+    needs: [verify, deploy-cloudflare]
+    if: ${{ always() && needs.verify.result == 'success' && (needs.deploy-cloudflare.result == 'success' || needs.deploy-cloudflare.result == 'skipped') && (github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'vercel') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: vercel-production
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      API_URL: ${{ vars.GROKBOT_API_URL || needs.deploy-cloudflare.outputs.url }}
+    steps:
+      - name: Check configuration
+        working-directory: .
+        run: |
+          missing=()
+          [ -n "$VERCEL_TOKEN" ] || missing+=(VERCEL_TOKEN)
+          [ -n "$VERCEL_ORG_ID" ] || missing+=(VERCEL_ORG_ID)
+          [ -n "$VERCEL_PROJECT_ID" ] || missing+=(VERCEL_PROJECT_ID)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing secrets in the vercel-production environment: ${missing[*]}"
+            exit 1
+          fi
+          if [ -z "$API_URL" ]; then
+            echo "::error::No Worker URL: deploy Cloudflare in the same run, or set the GROKBOT_API_URL variable."
+            exit 1
+          fi
+          echo "UI will call the Worker at $API_URL"
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: grokbot-cf/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Link the Vercel project
+        run: npx --yes "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - name: Build the UI for the Worker's origin
+        env:
+          VITE_GROKBOT_API_URL: ${{ env.API_URL }}
+        run: |
+          pnpm build:web
+          pnpm vercel:output
+      - name: Deploy prebuilt output
+        id: deploy
+        run: |
+          url=$(npx --yes "$VERCEL_CLI" deploy --prebuilt --prod --yes --token="$VERCEL_TOKEN" | tail -n1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Vercel URL: $url"
+      - name: Smoke test
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          curl -fsS "$URL/" | grep -q '<div id="root">'
+          curl -fsS "$URL/some/deep/link" | grep -q '<div id="root">'
+          echo "UI served at $URL (SPA fallback OK)"
+      - name: Summary
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          {
+            echo "### Vercel"
+            echo "- App: $URL"
+            echo "- Talks to: $API_URL"
+            echo ""
+            echo "Tip: set the GROKBOT_ALLOWED_ORIGINS variable to this app's production domain to lock the Worker to it."
+          } >> "$GITHUB_STEP_SUMMARY"

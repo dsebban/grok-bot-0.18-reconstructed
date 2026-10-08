@@ -9,6 +9,8 @@ interface Env {
   OPENAI_API_KEY?: string;
   /** Optional shared secret; when set, every API and socket call must carry it. */
   GROKBOT_TOKEN?: string;
+  /** Comma-separated browser origins allowed to call the Worker (e.g. the Vercel app). Unset: any. */
+  ALLOWED_ORIGINS?: string;
 }
 
 declare namespace Cloudflare {
