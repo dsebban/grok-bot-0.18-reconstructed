@@ -1,0 +1,39 @@
+{
+  "name": "grokbot-cf",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "GrokBot Cloud: a Grok Bot–style agent on pi-durable, hosted in Cloudflare Durable Objects",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite build && wrangler dev --config dist/grokbot/wrangler.json --port 8787",
+    "deploy": "vite build && wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config test/vitest.config.ts",
+    "e2e": "node e2e/run.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "^1.1.0",
+    "@earendil-works/pi-ai": "^1.1.0",
+    "@earendil-works/pi-durable": "^1.1.0",
+    "agents": "^0.27.0",
+    "marked": "^16.4.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typebox": "^1.3.27"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.63.0",
+    "@cloudflare/vitest-plugin": "^1.3.7",
+    "@cloudflare/workers-types": "^5.20261008.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "playwright-core": "^1.64.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vitest": "4.1.11",
+    "wrangler": "^4.148.0"
+  }
+}

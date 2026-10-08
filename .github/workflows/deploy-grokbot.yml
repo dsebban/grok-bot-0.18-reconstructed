@@ -1,0 +1,177 @@
+# Deploys GrokBot Cloud (grokbot-cf/) to Cloudflare:
+#
+#   verify             typecheck, workerd tests, and the browser e2e suite
+#   deploy-cloudflare  the Worker: bots (Durable Objects), API, and the UI as Worker assets
+#
+# Configure under Settings → Environments → "cloudflare-production" (or repository-wide):
+#
+#   secrets  CLOUDFLARE_API_TOKEN   (required) token from the "Edit Cloudflare Workers" template
+#            CLOUDFLARE_ACCOUNT_ID  (required)
+#            GROKBOT_TOKEN          (recommended) access token the API, sockets and UI require
+#            OPENROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY  (optional) direct providers
+#   vars     GROKBOT_DEFAULT_MODEL  (optional) e.g. cloudflare/@cf/moonshotai/kimi-k2.7-code
+#            GROKBOT_URL            (optional) the Worker's public URL, when it is on a custom
+#                                   domain instead of workers.dev (used for the smoke test)
+
+name: Deploy GrokBot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "grokbot-cf/**"
+      - ".github/workflows/deploy-grokbot.yml"
+  workflow_dispatch:
+    inputs:
+      skip_e2e:
+        description: Skip the browser e2e suites (unit tests still run)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-grokbot-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: grokbot-cf
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.28.0"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: grokbot-cf/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit and Durable Object tests (workerd)
+        run: pnpm test
+      - name: Install Chromium
+        if: ${{ !inputs.skip_e2e }}
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: E2E (wrangler dev + Chromium)
+        if: ${{ !inputs.skip_e2e }}
+        run: node e2e/run.mjs
+      - name: Upload e2e artifacts
+        if: ${{ failure() && !inputs.skip_e2e }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            grokbot-cf/e2e/artifacts/*.png
+            grokbot-cf/e2e/artifacts/*.json
+            grokbot-cf/e2e/artifacts/*.log
+          retention-days: 7
+
+  deploy-cloudflare:
+    name: Deploy bots + app to Cloudflare
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: cloudflare-production
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check configuration
+        working-directory: .
+        env:
+          HAS_GROKBOT_TOKEN: ${{ secrets.GROKBOT_TOKEN != '' }}
+        run: |
+          missing=()
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing+=(CLOUDFLARE_API_TOKEN)
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing secrets in the cloudflare-production environment: ${missing[*]}"
+            exit 1
+          fi
+          if [ "$HAS_GROKBOT_TOKEN" != "true" ]; then
+            echo "::warning::GROKBOT_TOKEN is not set: anyone with the URL can use the bot and your Workers AI quota."
+          fi
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: grokbot-cf/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build Worker and UI
+        run: pnpm build
+      - name: Write secrets file
+        env:
+          GROKBOT_TOKEN: ${{ secrets.GROKBOT_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          node -e '
+            const names = ["GROKBOT_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
+            const secrets = Object.fromEntries(names.filter((n) => process.env[n]).map((n) => [n, process.env[n]]));
+            require("fs").writeFileSync(process.env.RUNNER_TEMP + "/grokbot-secrets.json", JSON.stringify(secrets), { mode: 0o600 });
+            console.log("Secrets to upload: " + (Object.keys(secrets).join(", ") || "none"));
+          '
+      - name: Deploy with Wrangler
+        id: deploy
+        env:
+          DEFAULT_MODEL: ${{ vars.GROKBOT_DEFAULT_MODEL }}
+          URL_OVERRIDE: ${{ vars.GROKBOT_URL }}
+        run: |
+          args=(deploy --secrets-file "$RUNNER_TEMP/grokbot-secrets.json")
+          [ -n "$DEFAULT_MODEL" ] && args+=(--var "DEFAULT_MODEL:$DEFAULT_MODEL")
+          pnpm exec wrangler "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/wrangler-deploy.log"
+          status=${PIPESTATUS[0]}
+          rm -f "$RUNNER_TEMP/grokbot-secrets.json"
+          [ "$status" -eq 0 ] || exit "$status"
+          url="$URL_OVERRIDE"
+          if [ -z "$url" ]; then
+            url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/wrangler-deploy.log" | head -n1 || true)
+          fi
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+          echo "Worker URL: ${url:-unknown (set the GROKBOT_URL variable for custom domains)}"
+      - name: Smoke test
+        if: ${{ steps.deploy.outputs.url != '' }}
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS "$URL/api/health" | grep -q '"ok":true'; then
+              curl -fsS "$URL/api/config" | head -c 400; echo
+              curl -fsS "$URL/" | grep -q '<div id="root">' && echo "UI served at $URL"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::$URL/api/health did not answer"
+          exit 1
+      - name: Summary
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          {
+            echo "### Cloudflare"
+            echo "- Worker (bots, API, UI): ${URL:-see the deploy log}"
+          } >> "$GITHUB_STEP_SUMMARY"

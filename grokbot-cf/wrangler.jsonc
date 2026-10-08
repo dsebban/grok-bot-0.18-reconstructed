@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "grokbot",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  // Workers AI (and AI Gateway for third-party models). Remote: calls bill your account.
+  "ai": { "binding": "AI", "remote": true },
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/agents/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "GrokBot", "class_name": "GrokBot" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GrokBot"] }],
+  "vars": {
+    // Model new threads start with. "demo/grokbot-demo" runs fully offline.
+    "DEFAULT_MODEL": "opencode-go/deepseek-v4.1-flash"
+  },
+  "observability": { "enabled": true }
+}

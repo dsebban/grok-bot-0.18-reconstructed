@@ -23,6 +23,15 @@ This is a hacking and research project, not Anysphere's original monorepo and
 not an official Grok Bot release. Names and module boundaries inferred from a
 compiled application may differ from the original source.
 
+## GrokBot Cloud (`grokbot-cf/`)
+
+[`grokbot-cf/`](grokbot-cf/README.md) is a separate, from-scratch rebuild of
+Grok Bot as a Cloudflare Worker. Each bot runs in a Durable Object, with
+[pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable)
+as the agent harness. It has threads, a model router, memory, files, web
+fetch, scheduled automations, and a live web UI. It is self-contained, with its
+own `package.json`, and does not affect the macOS build below.
+
 ## What is in the repository?
 
 The checked-in tree contains the reviewed reconstruction, tests, manifests,
