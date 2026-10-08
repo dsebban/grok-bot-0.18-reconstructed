@@ -1,6 +1,7 @@
 import type { Provider } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { createAI } from "agents/models/pi-ai";
@@ -15,7 +16,7 @@ import { createDemoProvider, DEMO_MODEL, DEMO_PROVIDER } from "./demo-model";
  *
  * - `cloudflare`: Workers AI over the `AI` binding, plus third-party models
  *   through AI Gateway (unified billing, so no keys in the Worker).
- * - `openrouter`, `anthropic`, `openai`: direct, only when their API key
+ * - `opencode-go`, `openrouter`, `anthropic`, `openai`: direct, only when their API key
  *   secret is set.
  * - `demo`: the offline scripted model.
  */
@@ -44,6 +45,7 @@ const PICKS: Record<string, readonly string[]> = {
     "google/gemini-3-pro-preview",
     "moonshotai/kimi-k2.6"
   ],
+  "opencode-go": ["deepseek-v4.1-flash", "deepseek-v4-pro", "kimi-k2.7-code", "glm-5.3"],
   anthropic: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
   openai: ["gpt-5.5", "gpt-5.4-mini", "gpt-5.6-sol"]
 };
@@ -52,6 +54,7 @@ const GROUPS: Record<string, string> = {
   [DEMO_PROVIDER]: "Offline",
   cloudflare: "Cloudflare (Workers AI & AI Gateway)",
   openrouter: "OpenRouter",
+  "opencode-go": "OpenCode Go",
   anthropic: "Anthropic",
   openai: "OpenAI"
 };
@@ -89,6 +92,7 @@ export function createRouter(
   const providers: Provider[] = [demo.provider];
   if (env.AI) providers.push(createAI({ binding: env.AI }).provider);
   if (env.OPENROUTER_API_KEY) providers.push(openrouterProvider());
+  if (env.OPENCODE_API_KEY) providers.push(opencodeGoProvider());
   if (env.ANTHROPIC_API_KEY) providers.push(anthropicProvider());
   if (env.OPENAI_API_KEY) providers.push(openaiProvider());
   for (const provider of providers) models.setProvider(provider);

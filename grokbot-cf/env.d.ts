@@ -5,6 +5,7 @@ interface Env {
   DEFAULT_MODEL?: string;
   /** Optional provider keys, set with `wrangler secret put`. */
   OPENROUTER_API_KEY?: string;
+  OPENCODE_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   /** Optional shared secret; when set, every API and socket call must carry it. */

@@ -16,7 +16,7 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GrokBot"] }],
   "vars": {
     // Model new threads start with. "demo/grokbot-demo" runs fully offline.
-    "DEFAULT_MODEL": "cloudflare/@cf/moonshotai/kimi-k2.7-code"
+    "DEFAULT_MODEL": "opencode-go/deepseek-v4.1-flash"
   },
   "observability": { "enabled": true }
 }
