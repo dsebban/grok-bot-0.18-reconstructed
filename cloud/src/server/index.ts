@@ -1,5 +1,5 @@
 import { BOT_SECRET_KEYS, createRouter } from "./models";
-import { isRouterProviderId } from "./types";
+import { isAgentId, isRouterProviderId, VIEWER_ID } from "./types";
 
 export { GrokBot } from "./bot";
 
@@ -26,6 +26,7 @@ function authorized(request: Request, env: Env): boolean {
  *   GET|POST /api/bots/:bot/router        Settings → Router state / { provider }
  *   GET|POST /api/bots/:bot/secrets       key names / { upsert?, remove? }
  *   GET|POST /api/bots/:bot/sidebar       pinned agents and sidebar sections
+ *   POST /api/bots/:bot/viewing           { viewer, agentId } the chat a tab has selected
  *   GET  /api/bots/:bot/agents            the roster
  *   POST /api/bots/:bot/agents/:id/messages  { text } → waits for the answer
  *   WS   /agents/grok-bot/:bot            the coordinator socket
@@ -90,6 +91,14 @@ export default {
           }
           if (body.sections !== undefined && !Array.isArray(body.sections)) return json({ error: "sections must be a list" }, 400);
           return json(await bot.sidebar(body));
+        }
+        if (path[3] === "viewing" && path.length === 4 && request.method === "POST") {
+          const body = (await request.json().catch(() => null)) as { viewer?: unknown; agentId?: unknown } | null;
+          if (typeof body?.viewer !== "string" || !VIEWER_ID.test(body.viewer)) return json({ error: "viewer must be a tab id" }, 400);
+          const agentId = body.agentId ?? null;
+          if (agentId !== null && !isAgentId(agentId)) return json({ error: "agentId must be an agent id or null" }, 400);
+          await bot.viewing(body.viewer, agentId);
+          return json({ ok: true });
         }
         if (path[3] === "agents" && path.length === 4 && request.method === "GET") {
           return json({ agents: await bot.listAgents() });

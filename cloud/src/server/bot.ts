@@ -20,7 +20,7 @@ import { memorySection, memoryTools } from "./tools/memory";
 import { scheduleTools } from "./tools/schedule";
 import { webTools } from "./tools/web";
 import { lastText, projectView, type GrokEntry } from "./transcript";
-import { isAgentId, isRouterProviderId, modelKey, type AgentId, type ModelRef, type RouterProviderId } from "./types";
+import { isAgentId, isRouterProviderId, modelKey, VIEWER_ID, type AgentId, type ModelRef, type RouterProviderId } from "./types";
 import { EMPTY_VIEW, reduceAll, type ThreadView } from "./view";
 
 const BG = BACKGROUND_CONTEXT;
@@ -75,8 +75,14 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
   readonly registry = createRegistry();
   #router: Router | undefined;
   readonly #watches = new Map<AgentId, Promise<Watch>>();
-  /** The chat each connected renderer has open (its last `openAgentTail`). */
-  readonly #viewing = new Map<WebSocket, AgentId>();
+  /**
+   * Which chat each browser tab has selected. The renderer persists its
+   * selection on every switch (cached chats included, which do not call
+   * `openAgentTail`), and the web bridge reports that here. A chat counts as
+   * watched only while its tab's socket is connected.
+   */
+  readonly #viewerChats = new Map<string, AgentId | null>();
+  readonly #socketViewers = new Map<WebSocket, string>();
   /**
    * Ordering for the renderer's replicas, as the desktop host does it
    * (host/extensions/transcript/replica-writer.ts): one epoch per isolate,
@@ -203,9 +209,28 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
     if (change.sections !== undefined) this.store.setSetting("sidebarSections", JSON.stringify(change.sections));
     const parse = (raw: string | null) => (raw === null ? null : (JSON.parse(raw) as unknown[]));
     return {
-      pinnedAgentIds: parse(this.store.setting("pinnedAgents")) as string[] | null,
-      sections: parse(this.store.setting("sidebarSections"))
+      // Nothing stored yet is an empty sidebar, not an unavailable one: the
+      // renderer only offers "New section" when it gets a list.
+      pinnedAgentIds: (parse(this.store.setting("pinnedAgents")) ?? []) as string[],
+      sections: parse(this.store.setting("sidebarSections")) ?? []
     };
+  }
+
+  /**
+   * A tab selected a chat (or none, or was hidden). Selecting a chat marks it
+   * viewed, like the host's activation, even when the renderer shows it from
+   * its cache without reopening it.
+   */
+  async viewing(viewer: string, agentId: AgentId | null): Promise<void> {
+    await this.lifecycle.start();
+    this.#viewerChats.delete(viewer);
+    this.#viewerChats.set(viewer, agentId);
+    // Tabs that went away for good: keep the newest few hundred.
+    for (const stale of this.#viewerChats.keys()) {
+      if (this.#viewerChats.size <= 256) break;
+      if (![...this.#socketViewers.values()].includes(stale)) this.#viewerChats.delete(stale);
+    }
+    if (agentId && this.store.agent(agentId)?.hasUnread) await this.#publish(this.store.updateAgent(agentId, { hasUnread: false }));
   }
 
   /** Settings → Router, as `desktop.agent.getInferenceRouter()` reports it. */
@@ -447,8 +472,9 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
   async deliver(agentId: AgentId, prompt: string, operationId: string) {
     await this.#watch(agentId);
     const receipt = await this.harness.session(agentId).submit(prompt, { operationId });
-    // Unread unless someone has this chat open, as the host's arrival marking does.
-    const watched = [...this.#viewing.values()].includes(agentId);
+    // Unread unless a connected tab has this chat selected, as the host's
+    // arrival marking does for the focused active chat.
+    const watched = [...this.#socketViewers.values()].some((viewer) => this.#viewerChats.get(viewer) === agentId);
     await this.#publish(this.store.updateAgent(agentId, { touch: true, ...(watched ? {} : { hasUnread: true }) }));
     const settled = this.harness
       .session(agentId)
@@ -465,10 +491,13 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
 
   // ── CoordinatorHost ─────────────────────────────────────────────────────
 
-  connected(): void {}
+  connected(socket: WebSocket, request: Request): void {
+    const viewer = new URL(request.url).searchParams.get("viewer");
+    if (viewer && VIEWER_ID.test(viewer)) this.#socketViewers.set(socket, viewer);
+  }
 
   disconnected(socket: WebSocket): void {
-    this.#viewing.delete(socket);
+    this.#socketViewers.delete(socket);
     if (this.coordinator.count > 0) return;
     // Nobody is watching: drop the in-memory watches. pi keeps running.
     const watches = [...this.#watches.values()];
@@ -476,7 +505,7 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
     for (const watching of watches) void watching.then((watch) => watch.stream.stop(), () => undefined);
   }
 
-  async call(method: string, args: unknown, socket?: WebSocket): Promise<unknown> {
+  async call(method: string, args: unknown): Promise<unknown> {
     await this.lifecycle.start();
     const a = record(args);
     switch (method) {
@@ -538,7 +567,6 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
       case "openAgentTail": {
         // Opening a chat marks it viewed, as the desktop host's activation does.
         const id = agentIdArg(a);
-        if (socket) this.#viewing.set(socket, id);
         const page = await this.#page(id, a.limit, a.beforeSeq);
         if (this.store.agent(id)?.hasUnread) await this.#publish(this.store.updateAgent(id, { hasUnread: false }));
         return page;

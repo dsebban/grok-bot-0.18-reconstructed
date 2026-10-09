@@ -96,6 +96,22 @@ const NO_MCP: McpServerState = { servers: [] };
 
 /** Settings → Router's persistence key (frontend/.../settings/overlay/router.ts). */
 const ROUTER_KEY = "settings.router-provider.v1";
+/**
+ * The renderer persists the chat it shows on every switch, including chats it
+ * shows from cache without reopening them (`selection.last-agent`, see
+ * frontend/src/recovered/features/roster/selection-state.ts). That is the
+ * only place the bridge sees the selection, so it reports it to the bot.
+ */
+const SELECTION_KEY_SUFFIX = ".selection.last-agent";
+
+function selectedAgentOf(value: string): string | null {
+  try {
+    const agentId = (JSON.parse(value) as { value?: { agentId?: unknown } }).value?.agentId;
+    return typeof agentId === "string" && agentId.length > 0 ? agentId : null;
+  } catch {
+    return null;
+  }
+}
 
 function routerProviderOf(raw: string | null): string | undefined {
   try {
@@ -106,7 +122,7 @@ function routerProviderOf(raw: string | null): string | undefined {
   }
 }
 
-export function createWebDesktopBridge(session: WebSession): DesktopBridge {
+export function createWebDesktopBridge(session: WebSession, options: { reconstruction?: boolean } = {}): DesktopBridge {
   // The bot needs the Router choice and time zone for turns it runs on its own.
   void session.syncSettings({
     routerProvider: routerProviderOf(read(`persist:${ROUTER_KEY}`)) ?? "cursor",
@@ -465,16 +481,21 @@ export function createWebDesktopBridge(session: WebSession): DesktopBridge {
       // Pins and sections live in the bot, like the desktop host's, so they
       // follow the bot space across browsers.
       async getPinnedAgents() {
-        return (await session.api<{ pinnedAgentIds: string[] | null }>("sidebar")).pinnedAgentIds;
+        return (await session.api<{ pinnedAgentIds: string[] }>("sidebar")).pinnedAgentIds;
       },
       async setPinnedAgents(ids) {
-        return (await session.api<{ pinnedAgentIds: string[] | null }>("sidebar", { pinnedAgentIds: [...ids] })).pinnedAgentIds;
+        return (await session.api<{ pinnedAgentIds: string[] }>("sidebar", { pinnedAgentIds: [...ids] })).pinnedAgentIds;
       },
       async getSidebarSections() {
-        return (await session.api<{ sections: SidebarSection[] | null }>("sidebar")).sections;
+        const { sections } = await session.api<{ sections: SidebarSection[] }>("sidebar");
+        // The shipped renderer needs a list to offer "Move to new section";
+        // null means sections are unavailable. frontend/'s reconstruction
+        // instead renders an empty list as a sidebar with no sections and no
+        // bots, so it keeps null until a section exists.
+        return sections.length === 0 && options.reconstruction ? null : sections;
       },
       async setSidebarSections(sections) {
-        return (await session.api<{ sections: SidebarSection[] | null }>("sidebar", { sections: [...sections] })).sections;
+        return (await session.api<{ sections: SidebarSection[] }>("sidebar", { sections: [...sections] })).sections;
       },
       async getDefaultModel() {
         return session.defaultModel();
@@ -497,10 +518,12 @@ export function createWebDesktopBridge(session: WebSession): DesktopBridge {
         },
         async write(key, value) {
           write(`persist:${key}`, value);
+          if (key.endsWith(SELECTION_KEY_SUFFIX)) session.reportSelection(selectedAgentOf(value));
           if (key === ROUTER_KEY) void session.syncSettings({ routerProvider: routerProviderOf(value) });
         },
         async remove(key) {
           write(`persist:${key}`, null);
+          if (key.endsWith(SELECTION_KEY_SUFFIX)) session.reportSelection(null);
         },
         async listKeys(prefix) {
           const keys: string[] = [];

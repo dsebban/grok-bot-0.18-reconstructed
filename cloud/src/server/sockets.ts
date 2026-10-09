@@ -26,7 +26,8 @@ export class CoordinatorError extends Error {
 
 export interface CoordinatorHost {
   call(method: string, args: unknown, socket: WebSocket): Promise<unknown>;
-  connected(socket: WebSocket): void;
+  /** `request` is the upgrade request (its URL names the renderer's tab). */
+  connected(socket: WebSocket, request: Request): void;
   disconnected(socket: WebSocket): void;
 }
 
@@ -67,7 +68,7 @@ export class CoordinatorSockets extends LifecycleCapability {
         ready = true;
         this.#sockets.add(server);
         this.#send(server, { kind: "lifecycle", phase: "ready", protocolVersion: COORDINATOR_PROTOCOL_VERSION });
-        this.#host.connected(server);
+        this.#host.connected(server, request);
         return;
       }
       if (frame.kind === "lifecycle" && frame.phase === "shutdown") {

@@ -112,6 +112,9 @@ function unwrapRosterEvents(frame: unknown): unknown {
 
 export class WebSession {
   readonly bot = botFromLocation();
+  /** This tab, so the bot knows which chat it has selected. */
+  readonly viewer = crypto.randomUUID();
+  #selected: string | null = null;
   readonly config: WebConfig;
   #token: string | null;
   #current: SocketPort | null = null;
@@ -141,7 +144,9 @@ export class WebSession {
       if (token === null) throw new Error("An access token is required.");
       storage(TOKEN_KEY, token);
     }
-    return new WebSession(config, token, options);
+    const session = new WebSession(config, token, options);
+    session.watchVisibility();
+    return session;
   }
 
   static async #check(token: string | null): Promise<boolean> {
@@ -154,6 +159,7 @@ export class WebSession {
     const url = new URL(`/agents/grok-bot/${encodeURIComponent(this.bot)}`, window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     if (this.#token) url.searchParams.set("token", this.#token);
+    url.searchParams.set("viewer", this.viewer);
     return url.toString();
   }
 
@@ -222,6 +228,27 @@ export class WebSession {
       },
       body: JSON.stringify(settings)
     }).catch(() => undefined);
+  }
+
+  /**
+   * The renderer selected a chat (or none). A hidden tab is reported as
+   * viewing nothing, like the host only marking the focused window's chat
+   * viewed, so updates there still count as unread.
+   */
+  reportSelection(agentId: string | null): void {
+    this.#selected = agentId;
+    this.#reportViewing();
+  }
+
+  #reportViewing(): void {
+    const agentId = document.visibilityState === "hidden" ? null : this.#selected;
+    void this.api("viewing", { viewer: this.viewer, agentId }).catch(() => undefined);
+  }
+
+  watchVisibility(): void {
+    document.addEventListener("visibilitychange", () => {
+      if (this.#selected !== null) this.#reportViewing();
+    });
   }
 
   /** Drop the socket; the renderer's client reclaims and reconnects. */

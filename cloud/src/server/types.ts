@@ -22,6 +22,9 @@ export function parseModelKey(key: string): ModelRef | undefined {
   return { provider: key.slice(0, slash), modelId: key.slice(slash + 1) };
 }
 
+/** A browser tab's id, as the web bridge sends it. */
+export const VIEWER_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
 export function isAgentId(value: unknown): value is AgentId {
   return typeof value === "string" && /^[1-9][0-9]{0,15}$/.test(value);
 }

@@ -45,8 +45,9 @@ function raw(name: string): DurableObjectStub {
 type Frame = { kind: string; [key: string]: unknown };
 
 /** A renderer-side coordinator client: hello/ready, request/reply, events. */
-async function connect(bot: string) {
-  const response = await SELF.fetch(`https://bot.test/agents/grok-bot/${bot}`, { headers: { Upgrade: "websocket" } });
+async function connect(bot: string, viewer?: string) {
+  const query = viewer ? `?viewer=${viewer}` : "";
+  const response = await SELF.fetch(`https://bot.test/agents/grok-bot/${bot}${query}`, { headers: { Upgrade: "websocket" } });
   expect(response.status).toBe(101);
   const socket = response.webSocket!;
   socket.accept();
@@ -241,11 +242,67 @@ describe("coordinator protocol", () => {
 
     const sidebar = (body?: unknown) =>
       SELF.fetch(`https://bot.test/api/bots/${name}/sidebar`, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }).then((response) => response.json());
-    expect(await sidebar()).toEqual({ pinnedAgentIds: null, sections: null });
-    expect(await sidebar({ pinnedAgentIds: [agent.id] })).toEqual({ pinnedAgentIds: [agent.id], sections: null });
+    // Nothing stored is an empty sidebar (the renderer reads null as "sections unavailable").
+    expect(await sidebar()).toEqual({ pinnedAgentIds: [], sections: [] });
+    expect(await sidebar({ pinnedAgentIds: [agent.id] })).toEqual({ pinnedAgentIds: [agent.id], sections: [] });
     expect(await sidebar()).toMatchObject({ pinnedAgentIds: [agent.id] });
     const bad = await SELF.fetch(`https://bot.test/api/bots/${name}/sidebar`, { method: "POST", body: JSON.stringify({ pinnedAgentIds: [1] }) });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe("unread tracking follows the chat each tab has selected", () => {
+  const viewing = (bot: string, viewer: string, agentId: string | null) =>
+    SELF.fetch(`https://bot.test/api/bots/${bot}/viewing`, { method: "POST", body: JSON.stringify({ viewer, agentId }) });
+
+  it("switching A → B → cached A moves the watch back to A", async () => {
+    const name = crypto.randomUUID();
+    const client = await connect(name, "tab-1");
+    const { agent: a } = await client.call<{ agent: { id: string } }>("createAgent", { name: "A" });
+    const { agent: b } = await client.call<{ agent: { id: string } }>("createAgent", { name: "B" });
+    const runRoutine = async (agentId: string, prompt: string) => {
+      const [routine] = await client.call<Array<{ id: string }>>("createAgentAutomation", {
+        id: agentId,
+        spec: { name: prompt, prompt, trigger: { type: "cron", schedule: "0 9 * * 1-5" }, isEnabled: true }
+      });
+      await client.call("runAgentAutomationNow", { id: agentId, automationId: routine!.id });
+      await eventually(async () => {
+        const rows = await client.call<Array<{ runs: unknown[] }>>("getAgentAutomations", { id: agentId });
+        return rows.some((row) => row.runs.length > 0);
+      });
+    };
+    const unread = async (agentId: string) =>
+      projectRendererAgents(await client.call("listAgents")).find((item) => item.id === agentId)!.hasUnread === true;
+
+    // A is opened, then B, then A again from the renderer's cache: no
+    // openAgentTail, only the persisted selection the bridge reports.
+    await client.call("openAgentTail", { id: a.id, limit: 50 });
+    expect((await viewing(name, "tab-1", a.id)).status).toBe(200);
+    await client.call("openAgentTail", { id: b.id, limit: 50 });
+    await viewing(name, "tab-1", b.id);
+    await viewing(name, "tab-1", a.id);
+
+    // An update in the chat on screen is not unread; one in the background is.
+    await runRoutine(a.id, "check A");
+    expect(await unread(a.id)).toBe(false);
+    await runRoutine(b.id, "check B");
+    expect(await unread(b.id)).toBe(true);
+
+    // Selecting B from cache marks it viewed, as opening it would.
+    await viewing(name, "tab-1", b.id);
+    expect(await unread(b.id)).toBe(false);
+
+    // A selection only counts while its tab is connected; a hidden tab reports none.
+    await viewing(name, "tab-1", null);
+    await runRoutine(b.id, "check B again");
+    expect(await unread(b.id)).toBe(true);
+    await viewing(name, "tab-2", a.id);
+    await runRoutine(a.id, "check A again");
+    expect(await unread(a.id)).toBe(true);
+
+    expect((await viewing(name, "bad tab!", a.id)).status).toBe(400);
+    expect((await viewing(name, "tab-1", "not-an-id")).status).toBe(400);
+    client.socket.close();
   });
 });
 
