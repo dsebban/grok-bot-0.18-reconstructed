@@ -81,8 +81,10 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
    * `openAgentTail`), and the web bridge reports that here. A chat counts as
    * watched only while its tab's socket is connected.
    */
-  readonly #viewerChats = new Map<string, AgentId | null>();
+  readonly #viewerChats: Map<string, { agentId: AgentId | null; seq: number; seenAt: number }> = this.#loadViewers();
   readonly #socketViewers = new Map<WebSocket, string>();
+  /** How long a tab's selection outlives its socket (reconnect backoff tops out at 8 s). */
+  protected reconnectGraceMs = 15_000;
   /**
    * Ordering for the renderer's replicas, as the desktop host does it
    * (host/extensions/transcript/replica-writer.ts): one epoch per isolate,
@@ -221,10 +223,14 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
    * viewed, like the host's activation, even when the renderer shows it from
    * its cache without reopening it.
    */
-  async viewing(viewer: string, agentId: AgentId | null): Promise<void> {
+  async viewing(viewer: string, agentId: AgentId | null, seq: number): Promise<void> {
     await this.lifecycle.start();
+    // Reports can arrive out of order; the tab numbers them.
+    const current = this.#viewerChats.get(viewer);
+    if (current && seq <= current.seq) return;
     this.#viewerChats.delete(viewer);
-    this.#viewerChats.set(viewer, agentId);
+    this.#viewerChats.set(viewer, { agentId, seq, seenAt: Date.now() });
+    this.store.setViewer(viewer, agentId, seq);
     // Tabs that went away for good: keep the newest few hundred.
     for (const stale of this.#viewerChats.keys()) {
       if (this.#viewerChats.size <= 256) break;
@@ -472,9 +478,9 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
   async deliver(agentId: AgentId, prompt: string, operationId: string) {
     await this.#watch(agentId);
     const receipt = await this.harness.session(agentId).submit(prompt, { operationId });
-    // Unread unless a connected tab has this chat selected, as the host's
-    // arrival marking does for the focused active chat.
-    const watched = [...this.#socketViewers.values()].some((viewer) => this.#viewerChats.get(viewer) === agentId);
+    // Unread unless a tab has this chat selected, as the host's arrival
+    // marking does for the focused active chat.
+    const watched = this.#isWatched(agentId);
     await this.#publish(this.store.updateAgent(agentId, { touch: true, ...(watched ? {} : { hasUnread: true }) }));
     const settled = this.harness
       .session(agentId)
@@ -491,13 +497,40 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
 
   // ── CoordinatorHost ─────────────────────────────────────────────────────
 
+  /**
+   * Selections outlive a restart in storage. Every tab lost its socket when
+   * the object restarted, so each starts its reconnect grace now.
+   */
+  #loadViewers(): Map<string, { agentId: AgentId | null; seq: number; seenAt: number }> {
+    const now = Date.now();
+    return new Map(this.store.viewers().map((row) => [row.viewer, { agentId: row.agentId, seq: row.seq, seenAt: now }]));
+  }
+
+  /**
+   * A tab watches its selected chat while its socket is connected, and for a
+   * short grace after it drops or after its last report: a tab reconnecting
+   * after a blip or a restart still has the chat on screen. A closed tab
+   * reports "nothing" as it is hidden, so the grace rarely applies to one.
+   */
+  #isWatched(agentId: AgentId): boolean {
+    const connected = new Set(this.#socketViewers.values());
+    const now = Date.now();
+    for (const [viewer, chat] of this.#viewerChats) {
+      if (chat.agentId === agentId && (connected.has(viewer) || now - chat.seenAt < this.reconnectGraceMs)) return true;
+    }
+    return false;
+  }
+
   connected(socket: WebSocket, request: Request): void {
     const viewer = new URL(request.url).searchParams.get("viewer");
     if (viewer && VIEWER_ID.test(viewer)) this.#socketViewers.set(socket, viewer);
   }
 
   disconnected(socket: WebSocket): void {
+    const viewer = this.#socketViewers.get(socket);
     this.#socketViewers.delete(socket);
+    const chat = viewer === undefined ? undefined : this.#viewerChats.get(viewer);
+    if (chat) chat.seenAt = Date.now();
     if (this.coordinator.count > 0) return;
     // Nobody is watching: drop the in-memory watches. pi keeps running.
     const watches = [...this.#watches.values()];

@@ -49,6 +49,7 @@ browser ────────────────────────
 | Routines (`getAgentAutomations`, `createAgentAutomation`, run now, enable) | Lifecycle jobs with idempotent runs, using `source/shared/automation-schedule.ts` |
 | Settings → Router (`getInferenceRouter`, `secrets.upsert`) | per-bot Router choice and stored provider keys; usage is counted per provider |
 | pinned bots and sidebar sections (`getPinnedAgents`, `getSidebarSections`) | stored in the bot, like the host's, so they follow you across browsers |
+| unread, which the host derives from the focused window's active chat | the bridge reports each tab's selection (the renderer's persisted `selection.last-agent`, including chats shown from cache), numbered and retried, and again on every reconnect; the bot keeps it in SQLite and honours it while the tab is connected or reconnecting |
 | a new coordinator port after a restart, and `promptAcceptanceStatus` | the bridge reconnects and pushes a fresh port, as Electron's main process does; the bot answers from its send ledger, so the renderer resends a prompt that never arrived |
 | computer, rooms, channels, skills, teach | the host's "feature off" answers |
 
@@ -117,7 +118,7 @@ To deploy by hand: `npx wrangler login && pnpm run deploy && npx wrangler secret
 
 ```sh
 pnpm typecheck   # web bridge (DOM) and Worker (workers-types), including the reused frontend/ and source/ files
-pnpm test        # 15 workerd tests: the coordinator protocol over a real WebSocket, checked with the renderer's own projections
+pnpm test        # 19 workerd tests: the coordinator protocol over a real WebSocket, checked with the renderer's own projections
 node e2e/run.mjs # 10 browser steps against wrangler dev (GROKBOT_UI=reconstructed: 9)
 ```
 

@@ -104,6 +104,12 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS gb_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS gb_viewers (
+    viewer TEXT PRIMARY KEY,
+    agent_id TEXT,
+    seq INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   )`
 ];
 
@@ -202,6 +208,30 @@ export class Store {
 
   #all<T extends Row>(query: string, ...args: SqlStorageValue[]): T[] {
     return this.#sql.exec<T>(query, ...args).toArray();
+  }
+
+  // ── Viewers (the chat each browser tab has selected) ────────────────────
+
+  setViewer(viewer: string, agentId: AgentId | null, seq: number): void {
+    const now = Date.now();
+    this.#sql.exec(
+      `INSERT INTO gb_viewers (viewer, agent_id, seq, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(viewer) DO UPDATE SET agent_id = excluded.agent_id, seq = excluded.seq, updated_at = excluded.updated_at`,
+      viewer,
+      agentId,
+      seq,
+      now
+    );
+    // Tabs are per page load: forget ones not heard from in a day.
+    this.#sql.exec(`DELETE FROM gb_viewers WHERE updated_at < ?`, now - 86_400_000);
+  }
+
+  viewers(): Array<{ viewer: string; agentId: AgentId | null; seq: number }> {
+    return this.#all<{ viewer: string; agent_id: string | null; seq: number }>(`SELECT viewer, agent_id, seq FROM gb_viewers`).map((row) => ({
+      viewer: row.viewer,
+      agentId: row.agent_id as AgentId | null,
+      seq: row.seq
+    }));
   }
 
   // ── Settings ────────────────────────────────────────────────────────────

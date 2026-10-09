@@ -17,6 +17,9 @@ async function stubFetch(input: RequestInfo | URL): Promise<Response> {
 
 /** GrokBot with a stubbed network and a fast demo model. */
 export class TestGrokBot extends GrokBot {
+  /** Short, so the tests can see a dropped tab's selection expire. */
+  protected override reconnectGraceMs = 300;
+
   protected override botOptions(): BotOptions {
     return { fetcher: stubFetch as typeof fetch, demoTokensPerSecond: 2_000 };
   }

@@ -122,7 +122,7 @@ function routerProviderOf(raw: string | null): string | undefined {
   }
 }
 
-export function createWebDesktopBridge(session: WebSession, options: { reconstruction?: boolean } = {}): DesktopBridge {
+export function createWebDesktopBridge(session: WebSession): DesktopBridge {
   // The bot needs the Router choice and time zone for turns it runs on its own.
   void session.syncSettings({
     routerProvider: routerProviderOf(read(`persist:${ROUTER_KEY}`)) ?? "cursor",
@@ -487,12 +487,9 @@ export function createWebDesktopBridge(session: WebSession, options: { reconstru
         return (await session.api<{ pinnedAgentIds: string[] }>("sidebar", { pinnedAgentIds: [...ids] })).pinnedAgentIds;
       },
       async getSidebarSections() {
-        const { sections } = await session.api<{ sections: SidebarSection[] }>("sidebar");
-        // The shipped renderer needs a list to offer "Move to new section";
-        // null means sections are unavailable. frontend/'s reconstruction
-        // instead renders an empty list as a sidebar with no sections and no
-        // bots, so it keeps null until a section exists.
-        return sections.length === 0 && options.reconstruction ? null : sections;
+        // An empty list, not null: null tells the renderer sections are
+        // unavailable, and it then cannot create the first one.
+        return (await session.api<{ sections: SidebarSection[] }>("sidebar")).sections;
       },
       async setSidebarSections(sections) {
         return (await session.api<{ sections: SidebarSection[] }>("sidebar", { sections: [...sections] })).sections;
@@ -514,7 +511,9 @@ export function createWebDesktopBridge(session: WebSession, options: { reconstru
       },
       clientPersistence: {
         async read(key) {
-          return read(`persist:${key}`);
+          const value = read(`persist:${key}`);
+          if (key.endsWith(SELECTION_KEY_SUFFIX) && value !== null) session.restoredSelection(selectedAgentOf(value));
+          return value;
         },
         async write(key, value) {
           write(`persist:${key}`, value);

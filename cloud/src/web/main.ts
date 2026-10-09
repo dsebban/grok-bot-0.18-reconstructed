@@ -15,7 +15,7 @@ declare const __GROKBOT_RENDERER_ENTRY__: string;
  */
 async function boot(): Promise<void> {
   const session = await WebSession.start({ bareRosterEvents: !__GROKBOT_RENDERER_ENTRY__ });
-  window.desktop = createWebDesktopBridge(session, { reconstruction: !__GROKBOT_RENDERER_ENTRY__ });
+  window.desktop = createWebDesktopBridge(session);
   window.coordinatorPort = session.coordinatorPort;
   if (__GROKBOT_RENDERER_ENTRY__) await import(/* @vite-ignore */ __GROKBOT_RENDERER_ENTRY__);
   else await import("../../../frontend/src/main.tsx");

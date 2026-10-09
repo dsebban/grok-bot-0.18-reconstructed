@@ -115,6 +115,10 @@ export class WebSession {
   /** This tab, so the bot knows which chat it has selected. */
   readonly viewer = crypto.randomUUID();
   #selected: string | null = null;
+  /** Whether the renderer has written a selection yet (it outranks a restored one). */
+  #selectionWritten = false;
+  /** Orders this tab's reports, so a delayed one cannot overwrite a newer one. */
+  #viewSeq = 0;
   readonly config: WebConfig;
   #token: string | null;
   #current: SocketPort | null = null;
@@ -191,7 +195,12 @@ export class WebSession {
       this.#current = port;
       port.addEventListener("message", (event) => {
         const frame = event.data as { kind?: string; phase?: string };
-        if (frame?.kind === "lifecycle" && frame.phase === "ready") this.#attempt = 0;
+        if (frame?.kind === "lifecycle" && frame.phase === "ready") {
+          this.#attempt = 0;
+          // The bot forgets selections when it restarts, and only counts a
+          // tab's selection while its socket is connected: say it again.
+          this.#reportViewing();
+        }
       });
       // The renderer never asks again after a port closes: in the desktop app
       // the main process pushes a fresh port whenever the coordinator comes
@@ -204,8 +213,9 @@ export class WebSession {
   }
 
   /** Call the bot's REST API (`/api/bots/<bot>/<path>`). */
-  async api<T>(path: string, body?: unknown): Promise<T> {
+  async api<T>(path: string, body?: unknown, init: { keepalive?: boolean } = {}): Promise<T> {
     const response = await fetch(`/api/bots/${encodeURIComponent(this.bot)}/${path}`, {
+      ...init,
       method: body === undefined ? "GET" : "POST",
       headers: {
         ...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -236,13 +246,34 @@ export class WebSession {
    * viewed, so updates there still count as unread.
    */
   reportSelection(agentId: string | null): void {
+    this.#selectionWritten = true;
+    this.#selected = agentId;
+    this.#reportViewing();
+  }
+
+  /**
+   * The renderer read back its persisted selection on startup. It restores
+   * that chat without writing it again, so this is the only report of it.
+   */
+  restoredSelection(agentId: string | null): void {
+    if (this.#selectionWritten) return;
     this.#selected = agentId;
     this.#reportViewing();
   }
 
   #reportViewing(): void {
     const agentId = document.visibilityState === "hidden" ? null : this.#selected;
-    void this.api("viewing", { viewer: this.viewer, agentId }).catch(() => undefined);
+    const seq = ++this.#viewSeq;
+    // A report sent while the bot restarts can be lost; retry it until it
+    // lands or a newer one replaces it (the bot ignores older numbers).
+    const send = (attempt: number): void => {
+      // keepalive: the "hidden" report of a closing tab must outlive the page.
+      void this.api("viewing", { viewer: this.viewer, agentId, seq }, { keepalive: true }).catch(() => {
+        if (seq !== this.#viewSeq || attempt >= 6) return;
+        setTimeout(() => send(attempt + 1), Math.min(8_000, 500 * 2 ** attempt));
+      });
+    };
+    send(0);
   }
 
   watchVisibility(): void {
