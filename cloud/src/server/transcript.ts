@@ -74,6 +74,15 @@ export function projectView(view: ThreadView, options: ProjectOptions): GrokEntr
   let turn = -1;
   let sends = 0;
 
+  // A run interrupted by a crash (or eviction) is retried in the same turn.
+  // The interrupted partial answer is superseded by the retry, so it is not
+  // shown; the retry takes its positional ids and updates the bubble in place.
+  // A user's own stop is followed by a user message and stays visible.
+  const all = view.live ? [...view.messages, view.live] : view.messages;
+  const superseded = new Set(
+    all.filter((message, index) => message.role === "assistant" && message.interrupted && all[index + 1]?.role === "assistant")
+  );
+
   const push = (message: ChatMessage, isLive: boolean) => {
     const timestampMs = message.timestamp || Date.now();
     if (message.role === "notice") {
@@ -100,7 +109,9 @@ export function projectView(view: ThreadView, options: ProjectOptions): GrokEntr
       return;
     }
     const prefix = `e${epoch}t${turn < 0 ? "b" : turn}`;
+    const hidden = superseded.has(message);
     message.parts.forEach((part) => {
+      if (hidden && (part.type !== "tool-call" || !view.results[part.callId])) return;
       if (part.type === "text") {
         if (part.text.length === 0 && !isLive) return;
         entries.push({

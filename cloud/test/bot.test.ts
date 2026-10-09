@@ -208,6 +208,45 @@ describe("coordinator protocol", () => {
     expect(row).toBeDefined();
     client.socket.close();
   });
+
+  it("answers the renderer's acceptance lookups so prompts lost in a reconnect are resent", async () => {
+    const client = await connect(crypto.randomUUID());
+    const { agent } = await client.call<{ agent: { id: string } }>("createAgent", { name: "New chat" });
+    // A prompt that never reached the bot: the renderer resends it.
+    expect(await client.call("promptAcceptanceStatus", { accountSlot: "host", clientNonce: "lost" })).toEqual({ outcome: "not-found" });
+    await client.call("sendPrompt", { agentId: agent.id, prompt: "hello", clientNonce: "kept" });
+    expect(await client.call("promptAcceptanceStatus", { accountSlot: "host", clientNonce: "kept" })).toMatchObject({
+      outcome: "found",
+      record: { clientNonce: "kept", status: "accepted", agentId: agent.id }
+    });
+    // A resend with the same nonce is the same pi submission, not a second turn.
+    await client.call("sendPrompt", { agentId: agent.id, prompt: "hello", clientNonce: "kept" });
+    const entries = await eventually(async () => {
+      const page = await client.call<{ entries: GrokEntry[] }>("getAgentTranscriptTail", { id: agent.id, limit: 50 });
+      return page.entries.some((entry) => entry.kind === "send-message") && page.entries;
+    });
+    expect(entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+    client.socket.close();
+  });
+
+  it("marks a chat read when the renderer opens it, and keeps pins in the bot", async () => {
+    const name = crypto.randomUUID();
+    const client = await connect(name);
+    const { agent } = await client.call<{ agent: { id: string } }>("createAgent", { name: "Inbox" });
+    await client.call("setAgentUnread", { id: agent.id, isUnread: true });
+    await client.call("openAgentTail", { id: agent.id, limit: 50 });
+    const row = projectRendererAgents(await client.call("listAgents")).find((item) => item.id === agent.id)!;
+    expect(row.hasUnread).toBeFalsy();
+    client.socket.close();
+
+    const sidebar = (body?: unknown) =>
+      SELF.fetch(`https://bot.test/api/bots/${name}/sidebar`, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }).then((response) => response.json());
+    expect(await sidebar()).toEqual({ pinnedAgentIds: null, sections: null });
+    expect(await sidebar({ pinnedAgentIds: [agent.id] })).toEqual({ pinnedAgentIds: [agent.id], sections: null });
+    expect(await sidebar()).toMatchObject({ pinnedAgentIds: [agent.id] });
+    const bad = await SELF.fetch(`https://bot.test/api/bots/${name}/sidebar`, { method: "POST", body: JSON.stringify({ pinnedAgentIds: [1] }) });
+    expect(bad.status).toBe(400);
+  });
 });
 
 describe("tools through the model loop", () => {
@@ -288,6 +327,17 @@ describe("routines", () => {
     const rows = await runInDurableObject(raw(name) as DurableObjectStub<TestGrokBot>, (instance: TestGrokBot) => instance.store.automations());
     expect(rows[0]).toMatchObject({ isEnabled: false, nextRunAt: null });
   });
+
+  it("keeps a recurring routine the model scheduled running", async () => {
+    const name = crypto.randomUUID();
+    const bot = stub(name);
+    const { id } = await bot.createAgent();
+    const reply = await bot.prompt(id, "every 2 minutes check the news");
+    expect(reply.text).toMatch(/Created routine .* \(Every 2 minutes/);
+    const rows = await runInDurableObject(raw(name) as DurableObjectStub<TestGrokBot>, (instance: TestGrokBot) => instance.store.automations());
+    expect(rows[0]).toMatchObject({ schedule: "@every 2m", isEnabled: true });
+    expect(rows[0]!.nextRunAt).toBeGreaterThan(Date.now());
+  });
 });
 
 describe("settings", () => {
@@ -334,6 +384,15 @@ describe("durability", () => {
     expect(await bot.rawAnswers(id)).toEqual(["aborted", "stop", "stop"]);
     const entries = await bot.transcript(id);
     expect(entries.filter((entry) => entry.kind === "message").map((entry) => entry.content)).toEqual(["slow", "and now?"]);
+    // The interrupted partial answer is superseded by the retry: one answer per turn,
+    // and the retry keeps the id the partial streamed under.
+    expect(entries.map((entry) => `${entry.id}:${entry.kind}`)).toEqual([
+      "e0t0u:message",
+      "e0t0s0:send-message",
+      "e0t1u:message",
+      "e0t1s0:send-message"
+    ]);
+    expect(text(entries[1] as Record<string, unknown>)).toMatch(/resumes from the last checkpoint\.$/);
     void receipt;
   });
 });

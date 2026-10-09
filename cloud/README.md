@@ -48,6 +48,8 @@ browser ────────────────────────
 | `sendPrompt` with `clientNonce` | pi `submit()` with `operationId = nonce:<clientNonce>`, echoed on the user entry |
 | Routines (`getAgentAutomations`, `createAgentAutomation`, run now, enable) | Lifecycle jobs with idempotent runs, using `source/shared/automation-schedule.ts` |
 | Settings → Router (`getInferenceRouter`, `secrets.upsert`) | per-bot Router choice and stored provider keys; usage is counted per provider |
+| pinned bots and sidebar sections (`getPinnedAgents`, `getSidebarSections`) | stored in the bot, like the host's, so they follow you across browsers |
+| a new coordinator port after a restart, and `promptAcceptanceStatus` | the bridge reconnects and pushes a fresh port, as Electron's main process does; the bot answers from its send ledger, so the renderer resends a prompt that never arrived |
 | computer, rooms, channels, skills, teach | the host's "feature off" answers |
 
 Settings → Router maps onto this deployment's providers:
@@ -115,8 +117,8 @@ To deploy by hand: `npx wrangler login && pnpm run deploy && npx wrangler secret
 
 ```sh
 pnpm typecheck   # web bridge (DOM) and Worker (workers-types), including the reused frontend/ and source/ files
-pnpm test        # 12 workerd tests: the coordinator protocol over a real WebSocket, checked with the renderer's own projections
-node e2e/run.mjs # 9 browser steps against wrangler dev (GROKBOT_UI=reconstructed: 8)
+pnpm test        # 15 workerd tests: the coordinator protocol over a real WebSocket, checked with the renderer's own projections
+node e2e/run.mjs # 10 browser steps against wrangler dev (GROKBOT_UI=reconstructed: 9)
 ```
 
 The e2e suite covers:
@@ -127,8 +129,10 @@ The e2e suite covers:
 - a reminder fired by the Durable Object alarm;
 - creating a bot from the To: picker;
 - Settings → Router, including saving a key;
-- `SIGKILL` of the server mid-answer, after which the answer resumes and the
-  UI reconnects on its own.
+- `SIGKILL` of the server mid-answer, after which the answer resumes, with
+  the interrupted partial answer replaced by the retry;
+- another `SIGKILL`, after which the UI reconnects on its own and a message
+  typed straight away is delivered.
 
 ## Files
 

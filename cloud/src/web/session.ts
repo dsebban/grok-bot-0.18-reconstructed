@@ -187,6 +187,12 @@ export class WebSession {
         const frame = event.data as { kind?: string; phase?: string };
         if (frame?.kind === "lifecycle" && frame.phase === "ready") this.#attempt = 0;
       });
+      // The renderer never asks again after a port closes: in the desktop app
+      // the main process pushes a fresh port whenever the coordinator comes
+      // back. Do the same: reconnect (with backoff) and hand it over.
+      port.addEventListener("close", () => {
+        if (this.#current === port) this.#open();
+      });
       this.#consumer.onPort(port);
     }, delay);
   }

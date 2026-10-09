@@ -119,8 +119,8 @@ export function demoReply(context: TranscriptContext): AssistantMessage {
   if ((match = /^every ([\d.]+) minutes? (.+)$/i.exec(prompt))) {
     return call("schedule_prompt", {
       prompt: match[2].trim(),
-      inMinutes: Number(match[1]),
-      everyMinutes: Number(match[1])
+      // `@every` takes whole units.
+      schedule: Number.isInteger(Number(match[1])) ? `@every ${Number(match[1])}m` : `@every ${Math.max(1, Math.round(Number(match[1]) * 60))}s`
     });
   }
   if ((match = /^cancel (?:schedule )?(\S+)$/i.exec(prompt))) {

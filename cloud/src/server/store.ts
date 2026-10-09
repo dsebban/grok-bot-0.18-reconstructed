@@ -83,6 +83,11 @@ const SCHEMA = [
     nonce TEXT NOT NULL,
     PRIMARY KEY (agent_id, entry_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS gb_accepted (
+    nonce TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    accepted_at INTEGER NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS gb_secrets (
     name TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -290,6 +295,18 @@ export class Store {
       entryId,
       nonce
     );
+  }
+
+  /** The renderer's send ledger: nonces pi has durably accepted. */
+  acceptNonce(agentId: AgentId, nonce: string): void {
+    this.#sql.exec(`INSERT OR IGNORE INTO gb_accepted (nonce, agent_id, accepted_at) VALUES (?, ?, ?)`, nonce, agentId, Date.now());
+  }
+
+  acceptance(nonce: string): { agentId: AgentId; acceptedAt: number; entryId: string | null } | null {
+    const row = this.#all<{ agent_id: string; accepted_at: number }>(`SELECT agent_id, accepted_at FROM gb_accepted WHERE nonce = ?`, nonce)[0];
+    if (!row) return null;
+    const entry = this.#all<{ entry_id: string }>(`SELECT entry_id FROM gb_nonces WHERE agent_id = ? AND nonce = ?`, row.agent_id, nonce)[0];
+    return { agentId: row.agent_id as AgentId, acceptedAt: row.accepted_at, entryId: entry?.entry_id ?? null };
   }
 
   nonces(agentId: AgentId): Map<string, string> {

@@ -462,19 +462,19 @@ export function createWebDesktopBridge(session: WebSession): DesktopBridge {
       async setBoxRuntime() {
         throw new Error("GrokBot Cloud has no local Docker computer.");
       },
+      // Pins and sections live in the bot, like the desktop host's, so they
+      // follow the bot space across browsers.
       async getPinnedAgents() {
-        return readJson<string[] | null>("pinned-agents", null);
+        return (await session.api<{ pinnedAgentIds: string[] | null }>("sidebar")).pinnedAgentIds;
       },
       async setPinnedAgents(ids) {
-        write("pinned-agents", JSON.stringify(ids));
-        return [...ids];
+        return (await session.api<{ pinnedAgentIds: string[] | null }>("sidebar", { pinnedAgentIds: [...ids] })).pinnedAgentIds;
       },
       async getSidebarSections() {
-        return readJson<SidebarSection[] | null>("sidebar-sections", null);
+        return (await session.api<{ sections: SidebarSection[] | null }>("sidebar")).sections;
       },
       async setSidebarSections(sections) {
-        write("sidebar-sections", JSON.stringify(sections));
-        return [...sections];
+        return (await session.api<{ sections: SidebarSection[] | null }>("sidebar", { sections: [...sections] })).sections;
       },
       async getDefaultModel() {
         return session.defaultModel();

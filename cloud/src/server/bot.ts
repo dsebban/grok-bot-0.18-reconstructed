@@ -75,6 +75,8 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
   readonly registry = createRegistry();
   #router: Router | undefined;
   readonly #watches = new Map<AgentId, Promise<Watch>>();
+  /** The chat each connected renderer has open (its last `openAgentTail`). */
+  readonly #viewing = new Map<WebSocket, AgentId>();
   /**
    * Ordering for the renderer's replicas, as the desktop host does it
    * (host/extensions/transcript/replica-writer.ts): one epoch per isolate,
@@ -189,6 +191,21 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
       }
     }
     return { routerProvider: this.routerProvider(), model: modelKey(this.currentModel()) };
+  }
+
+  /**
+   * Sidebar pins and sections. The desktop host keeps these host-side
+   * (`getHostPinnedAgents`), so here they follow the bot space across browsers.
+   */
+  async sidebar(change: { pinnedAgentIds?: unknown; sections?: unknown } = {}) {
+    await this.lifecycle.start();
+    if (change.pinnedAgentIds !== undefined) this.store.setSetting("pinnedAgents", JSON.stringify(change.pinnedAgentIds));
+    if (change.sections !== undefined) this.store.setSetting("sidebarSections", JSON.stringify(change.sections));
+    const parse = (raw: string | null) => (raw === null ? null : (JSON.parse(raw) as unknown[]));
+    return {
+      pinnedAgentIds: parse(this.store.setting("pinnedAgents")) as string[] | null,
+      sections: parse(this.store.setting("sidebarSections"))
+    };
   }
 
   /** Settings → Router, as `desktop.agent.getInferenceRouter()` reports it. */
@@ -416,6 +433,7 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
       operationId: options.clientNonce ? `${NONCE_PREFIX}${options.clientNonce}` : crypto.randomUUID(),
       whenBusy: options.whenBusy ?? "followUp"
     });
+    if (options.clientNonce) this.store.acceptNonce(id, options.clientNonce);
     await this.#publish(this.store.updateAgent(id, { touch: true }));
     return receipt;
   }
@@ -429,7 +447,9 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
   async deliver(agentId: AgentId, prompt: string, operationId: string) {
     await this.#watch(agentId);
     const receipt = await this.harness.session(agentId).submit(prompt, { operationId });
-    await this.#publish(this.store.updateAgent(agentId, { touch: true, hasUnread: true }));
+    // Unread unless someone has this chat open, as the host's arrival marking does.
+    const watched = [...this.#viewing.values()].includes(agentId);
+    await this.#publish(this.store.updateAgent(agentId, { touch: true, ...(watched ? {} : { hasUnread: true }) }));
     const settled = this.harness
       .session(agentId)
       .wait(receipt.operationId)
@@ -447,7 +467,8 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
 
   connected(): void {}
 
-  disconnected(): void {
+  disconnected(socket: WebSocket): void {
+    this.#viewing.delete(socket);
     if (this.coordinator.count > 0) return;
     // Nobody is watching: drop the in-memory watches. pi keeps running.
     const watches = [...this.#watches.values()];
@@ -455,7 +476,7 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
     for (const watching of watches) void watching.then((watch) => watch.stream.stop(), () => undefined);
   }
 
-  async call(method: string, args: unknown): Promise<unknown> {
+  async call(method: string, args: unknown, socket?: WebSocket): Promise<unknown> {
     await this.lifecycle.start();
     const a = record(args);
     switch (method) {
@@ -514,7 +535,14 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
         return null;
 
       // Transcript
-      case "openAgentTail":
+      case "openAgentTail": {
+        // Opening a chat marks it viewed, as the desktop host's activation does.
+        const id = agentIdArg(a);
+        if (socket) this.#viewing.set(socket, id);
+        const page = await this.#page(id, a.limit, a.beforeSeq);
+        if (this.store.agent(id)?.hasUnread) await this.#publish(this.store.updateAgent(id, { hasUnread: false }));
+        return page;
+      }
       case "getAgentTranscriptTail":
         return this.#page(agentIdArg(a), a.limit, a.beforeSeq);
       case "getAgentTranscriptWindow":
@@ -530,8 +558,26 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
         });
         return { status: "accepted", accepted: true, operationId: receipt.operationId };
       }
-      case "promptAcceptanceStatus":
-        return { status: "accepted" };
+      case "promptAcceptanceStatus": {
+        // The host's acceptance ledger lookup. After a reconnect the renderer
+        // resends anything "not-found"; pi's operation ids make that idempotent.
+        const nonce = typeof a.clientNonce === "string" ? a.clientNonce : "";
+        const found = this.store.acceptance(nonce);
+        if (!found) return { outcome: "not-found" };
+        return {
+          outcome: "found",
+          record: {
+            accountSlot: typeof a.accountSlot === "string" ? a.accountSlot : "host",
+            clientNonce: nonce,
+            inputDigest: "",
+            status: "accepted",
+            acceptedAtMs: found.acceptedAt,
+            agentId: found.agentId,
+            echoEntryId: found.entryId,
+            rejectionCode: null
+          }
+        };
+      }
       case "reactToMessage":
         return null;
 

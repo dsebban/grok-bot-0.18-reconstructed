@@ -25,6 +25,7 @@ function authorized(request: Request, env: Env): boolean {
  *   POST /api/bots/:bot/settings          { routerProvider?, timeZone? }
  *   GET|POST /api/bots/:bot/router        Settings → Router state / { provider }
  *   GET|POST /api/bots/:bot/secrets       key names / { upsert?, remove? }
+ *   GET|POST /api/bots/:bot/sidebar       pinned agents and sidebar sections
  *   GET  /api/bots/:bot/agents            the roster
  *   POST /api/bots/:bot/agents/:id/messages  { text } → waits for the answer
  *   WS   /agents/grok-bot/:bot            the coordinator socket
@@ -72,6 +73,23 @@ export default {
           const unknown = Object.keys(body.upsert ?? {}).filter((name) => !(BOT_SECRET_KEYS as readonly string[]).includes(name));
           if (unknown.length > 0) return json({ error: `Cannot store ${unknown.join(", ")}` }, 400);
           return json(await bot.secrets(body));
+        }
+        if (path[3] === "sidebar" && path.length === 4) {
+          if (request.method === "GET") return json(await bot.sidebar());
+          const text = await request.text();
+          if (text.length > 64 * 1024) return json({ error: "Sidebar state is too large" }, 413);
+          let body: { pinnedAgentIds?: unknown; sections?: unknown };
+          try {
+            body = (JSON.parse(text || "{}") ?? {}) as typeof body;
+          } catch {
+            return json({ error: "Body must be JSON" }, 400);
+          }
+          const pins = body.pinnedAgentIds;
+          if (pins !== undefined && !(Array.isArray(pins) && pins.every((id) => typeof id === "string"))) {
+            return json({ error: "pinnedAgentIds must be a list of agent ids" }, 400);
+          }
+          if (body.sections !== undefined && !Array.isArray(body.sections)) return json({ error: "sections must be a list" }, 400);
+          return json(await bot.sidebar(body));
         }
         if (path[3] === "agents" && path.length === 4 && request.method === "GET") {
           return json({ agents: await bot.listAgents() });
