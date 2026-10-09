@@ -26,6 +26,8 @@ import { EMPTY_VIEW, reduceAll, type ThreadView } from "./view";
 const BG = BACKGROUND_CONTEXT;
 const NEW_CHAT = "New chat";
 const NONCE_PREFIX = "nonce:";
+/** How often connected tabs are stamped as present (well inside the reconnect grace). */
+const VIEWER_HEARTBEAT_MS = 5_000;
 
 export const PERSONA = [
   "You are Grok Bot, a sharp, witty and genuinely helpful assistant.",
@@ -498,12 +500,27 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
   // ── CoordinatorHost ─────────────────────────────────────────────────────
 
   /**
-   * Selections outlive a restart in storage. Every tab lost its socket when
-   * the object restarted, so each starts its reconnect grace now.
+   * Selections outlive a restart in storage, with when each tab was last
+   * known to be there: connected tabs are stamped every few seconds, and a
+   * tab that drops is stamped as it goes. So after a restart only the tabs
+   * that were connected moments before get the reconnect grace; a tab gone
+   * for an hour, or before a cold start days later, gets none.
    */
   #loadViewers(): Map<string, { agentId: AgentId | null; seq: number; seenAt: number }> {
+    return new Map(this.store.viewers().map((row) => [row.viewer, { agentId: row.agentId, seq: row.seq, seenAt: row.seenAt }]));
+  }
+
+  #heartbeat: ReturnType<typeof setInterval> | undefined;
+
+  /** Stamp the connected tabs, in memory and in storage. */
+  #stampConnected(): void {
     const now = Date.now();
-    return new Map(this.store.viewers().map((row) => [row.viewer, { agentId: row.agentId, seq: row.seq, seenAt: now }]));
+    const viewers = [...new Set(this.#socketViewers.values())];
+    for (const viewer of viewers) {
+      const chat = this.#viewerChats.get(viewer);
+      if (chat) chat.seenAt = now;
+    }
+    this.store.touchViewers(viewers, now);
   }
 
   /**
@@ -523,14 +540,24 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
 
   connected(socket: WebSocket, request: Request): void {
     const viewer = new URL(request.url).searchParams.get("viewer");
-    if (viewer && VIEWER_ID.test(viewer)) this.#socketViewers.set(socket, viewer);
+    if (!viewer || !VIEWER_ID.test(viewer)) return;
+    this.#socketViewers.set(socket, viewer);
+    this.#stampConnected();
+    this.#heartbeat ??= setInterval(() => this.#stampConnected(), VIEWER_HEARTBEAT_MS);
   }
 
   disconnected(socket: WebSocket): void {
     const viewer = this.#socketViewers.get(socket);
     this.#socketViewers.delete(socket);
-    const chat = viewer === undefined ? undefined : this.#viewerChats.get(viewer);
-    if (chat) chat.seenAt = Date.now();
+    if (viewer !== undefined) {
+      const chat = this.#viewerChats.get(viewer);
+      if (chat) chat.seenAt = Date.now();
+      this.store.touchViewers([viewer]);
+    }
+    if (this.#socketViewers.size === 0 && this.#heartbeat !== undefined) {
+      clearInterval(this.#heartbeat);
+      this.#heartbeat = undefined;
+    }
     if (this.coordinator.count > 0) return;
     // Nobody is watching: drop the in-memory watches. pi keeps running.
     const watches = [...this.#watches.values()];

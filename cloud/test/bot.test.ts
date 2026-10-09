@@ -270,6 +270,9 @@ async function reconnectScaffold(name: string, viewer = "tab-1") {
   return { client, runRoutine, unread };
 }
 
+/** Past TestGrokBot's reconnect grace (1 s). */
+const GRACE_PASSED = 1_100;
+
 describe("unread tracking follows the chat each tab has selected", () => {
   let seq = 0;
   const viewing = (bot: string, viewer: string, agentId: string | null, at = ++seq) =>
@@ -298,16 +301,35 @@ describe("unread tracking follows the chat each tab has selected", () => {
     const { client, a } = await scaffold(name);
     const other = await reconnectScaffold(name, "tab-9");
     await viewing(name, "tab-1", a.id);
-    await sleep(400);
+    await sleep(GRACE_PASSED);
     // tab-1 drops: within the grace a routine in its chat is not unread...
     client.socket.close();
     await other.runRoutine(a.id, "during the blip");
     expect(await other.unread(a.id)).toBe(false);
     // ...after it, nobody is watching.
-    await sleep(400);
+    await sleep(GRACE_PASSED);
     await other.runRoutine(a.id, "after the blip");
     expect(await other.unread(a.id)).toBe(true);
     other.client.socket.close();
+  });
+
+  it("gives no grace on a cold start to tabs that left long ago", async () => {
+    for (const ageMs of [3_600_000, 3 * 86_400_000 - 60_000]) {
+      const name = crypto.randomUUID();
+      const { client, a } = await scaffold(name);
+      // Saved state from a tab that selected A and then went away ageMs ago.
+      await viewing(name, "tab-old", a.id);
+      client.socket.close();
+      await runInDurableObject(raw(name) as DurableObjectStub<TestGrokBot>, (instance: TestGrokBot) =>
+        instance.store.touchViewers(["tab-old"], Date.now() - ageMs)
+      );
+      await abortAllDurableObjects();
+      // The cold start (here: another tab's socket) must not revive it.
+      const other = await reconnectScaffold(name, "tab-9");
+      await other.runRoutine(a.id, "unattended");
+      expect(await other.unread(a.id)).toBe(true);
+      other.client.socket.close();
+    }
   });
 
   it("remembers selections across a restart while tabs reconnect", async () => {
@@ -320,7 +342,7 @@ describe("unread tracking follows the chat each tab has selected", () => {
     await other.runRoutine(a.id, "while reconnecting");
     expect(await other.unread(a.id)).toBe(false);
     // ...for the reconnect grace only.
-    await sleep(400);
+    await sleep(GRACE_PASSED);
     await other.runRoutine(a.id, "nobody came back");
     expect(await other.unread(a.id)).toBe(true);
     // tab-1 reconnects and the bridge reports again on ready (marking A viewed);
@@ -329,7 +351,7 @@ describe("unread tracking follows the chat each tab has selected", () => {
     await viewing(name, "tab-1", null, 1);
     await viewing(name, "tab-1", a.id);
     expect(await unread(a.id)).toBe(false);
-    await sleep(400);
+    await sleep(GRACE_PASSED);
     await runRoutine(a.id, "after restart");
     expect(await unread(a.id)).toBe(false);
     client.socket.close();
@@ -364,7 +386,7 @@ describe("unread tracking follows the chat each tab has selected", () => {
     expect(await unread(b.id)).toBe(true);
     // A tab without a socket counts only for the reconnect grace.
     await viewing(name, "tab-2", a.id);
-    await sleep(400);
+    await sleep(GRACE_PASSED);
     await runRoutine(a.id, "check A again");
     expect(await unread(a.id)).toBe(true);
 

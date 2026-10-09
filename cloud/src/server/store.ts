@@ -226,11 +226,19 @@ export class Store {
     this.#sql.exec(`DELETE FROM gb_viewers WHERE updated_at < ?`, now - 86_400_000);
   }
 
-  viewers(): Array<{ viewer: string; agentId: AgentId | null; seq: number }> {
-    return this.#all<{ viewer: string; agent_id: string | null; seq: number }>(`SELECT viewer, agent_id, seq FROM gb_viewers`).map((row) => ({
+  /** When the bot last knew these tabs were there (connected, or just reported). */
+  touchViewers(viewers: readonly string[], at = Date.now()): void {
+    for (const viewer of viewers) this.#sql.exec(`UPDATE gb_viewers SET updated_at = ? WHERE viewer = ?`, at, viewer);
+  }
+
+  viewers(): Array<{ viewer: string; agentId: AgentId | null; seq: number; seenAt: number }> {
+    return this.#all<{ viewer: string; agent_id: string | null; seq: number; updated_at: number }>(
+      `SELECT viewer, agent_id, seq, updated_at FROM gb_viewers`
+    ).map((row) => ({
       viewer: row.viewer,
       agentId: row.agent_id as AgentId | null,
-      seq: row.seq
+      seq: row.seq,
+      seenAt: row.updated_at
     }));
   }
 
