@@ -12,6 +12,10 @@ const CHROMIUM = process.env.CHROMIUM_PATH ?? (fs.existsSync("/opt/pw-browsers/c
 
 /** Browser noise the app cannot avoid: a killed server, and the shipped renderer's Electron-only Sentry transport. */
 const EXPECTED_ERRORS = /WebSocket|ERR_CONNECTION|Failed to load resource|net::ERR|coordinator port closed|sentry/i;
+/** A lazily loaded chunk requested while the server was down (the renderer retries it). */
+const DOWNTIME_ERRORS = /Failed to fetch dynamically imported module/;
+/** How long after a restart a failed chunk fetch still counts as the outage's. */
+const DOWNTIME_TAIL_MS = 5_000;
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -28,6 +32,12 @@ export class Harness {
     this.server = null;
     this.browser = null;
     this.tabs = new Set();
+    /** [from, to] of each restart's outage, for errors only a server outage explains. */
+    this.downtime = [];
+  }
+
+  #duringDowntime(at) {
+    return this.downtime.some(([from, to]) => at >= from && at <= (to ?? Infinity) + DOWNTIME_TAIL_MS);
   }
 
   async start() {
@@ -39,6 +49,8 @@ export class Harness {
   /** Stop the server with `signal` and start it again on the same state. */
   async restart(signal = "SIGTERM") {
     fs.appendFileSync(this.logFile, `\n--- restart (${signal}) ---\n`);
+    const outage = [Date.now(), null];
+    this.downtime.push(outage);
     await Promise.race([this.server.stop(signal), sleep(15_000)]);
     this.server.stop("SIGKILL");
     await waitFor(async () => {
@@ -50,6 +62,7 @@ export class Harness {
       }
     }, "old server to stop", 15_000);
     await this.start();
+    outage[1] = Date.now();
   }
 
   async stop() {
@@ -89,8 +102,8 @@ export class Harness {
     const errors = [];
     const frames = [];
     const viewing = [];
-    page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
-    page.on("pageerror", (error) => errors.push(String(error)));
+    page.on("console", (message) => message.type() === "error" && errors.push({ text: message.text(), at: Date.now() }));
+    page.on("pageerror", (error) => errors.push({ text: String(error), at: Date.now() }));
     const sent = [];
     page.on("websocket", (socket) => {
       socket.on("framereceived", (frame) => frames.push(frame.payload));
@@ -106,6 +119,7 @@ export class Harness {
     const loaded = ready === "sidebar" ? page.getByText("Grok Bot", { exact: true }).first() : page.locator("[contenteditable=true]").first();
     await loaded.waitFor({ timeout: 60_000 });
     const ui = this.ui;
+    const harness = this;
     const tab = {
       page,
       context,
@@ -180,7 +194,10 @@ export class Harness {
           })
           .filter((frame) => frame?.kind === "reply" && frame.outcome.status !== "ok")
           .map((frame) => frame.outcome.failure),
-      unexpectedErrors: () => errors.filter((text) => !EXPECTED_ERRORS.test(text)),
+      unexpectedErrors: () =>
+        errors
+          .filter(({ text, at }) => !EXPECTED_ERRORS.test(text) && !(DOWNTIME_ERRORS.test(text) && harness.#duringDowntime(at)))
+          .map(({ text }) => text),
       close: async () => {
         tabs.delete(tab);
         await context.close().catch(() => {});
