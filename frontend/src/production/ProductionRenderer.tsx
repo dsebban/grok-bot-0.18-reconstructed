@@ -1623,7 +1623,9 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
   const sidebarSectionsWriteFailure = useSyncExternalStore(sidebarSectionsStore.subscribe, sidebarSectionsStore.getWriteFailure, sidebarSectionsStore.getWriteFailure);
   const collapsedSectionIds = useSyncExternalStore(sidebarCollapseStore.subscribe, sidebarCollapseStore.getCollapsedSectionIds, sidebarCollapseStore.getCollapsedSectionIds);
   const sidebarSections = useMemo(() => sidebarSectionRecords?.map((section) => ({ ...section, isCollapsed: collapsedSectionIds.includes(section.id) })) ?? null, [collapsedSectionIds, sidebarSectionRecords]);
-  const projectedSidebarSections = useMemo(() => sidebarSections == null ? undefined : projectSidebarSections({ agents: visibleAgents, pinnedIds: pinnedAgentIds, sections: sidebarSections }), [pinnedAgentIds, sidebarSections, visibleAgents]);
+  // No sections yet is the plain list, as in the shipped renderer; null only
+  // means sections are unavailable (and creating the first one is disabled).
+  const projectedSidebarSections = useMemo(() => sidebarSections == null || sidebarSections.length === 0 ? undefined : projectSidebarSections({ agents: visibleAgents, pinnedIds: pinnedAgentIds, sections: sidebarSections }), [pinnedAgentIds, sidebarSections, visibleAgents]);
 
   useEffect(() => {
     if (sidebarSectionsWriteFailure != null) setNotice(sidebarSectionsWriteFailure.code);
@@ -2603,7 +2605,9 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
   useEffect(() => {
     routinesController.reset();
     if (client == null || account?.kind !== "logged-in") return () => {};
-    const stopAutomations = client.subscribe("automations", (value) => {
+    // The coordinator event family, as the shipped renderer subscribes to it
+    // ("automations" is the host's internal channel name).
+    const stopAutomations = client.subscribe("agents-automation", (value) => {
       if (typeof value !== "object" || value == null || Array.isArray(value)) return;
       const event = value as { agentId?: unknown; automations?: unknown };
       if (typeof event.agentId !== "string" || !Array.isArray(event.automations)) return;

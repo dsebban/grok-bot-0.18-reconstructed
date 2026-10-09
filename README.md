@@ -23,6 +23,16 @@ This is a hacking and research project, not Anysphere's original monorepo and
 not an official Grok Bot release. Names and module boundaries inferred from a
 compiled application may differ from the original source.
 
+## GrokBot Cloud (`cloud/`)
+
+[`cloud/`](cloud/README.md) runs Grok Bot on Cloudflare. It serves the same UI
+the macOS package ships, booted in a browser behind a web implementation of
+the preload bridge. The bots behind that UI run on
+[pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable)
+inside Durable Objects, speaking the desktop coordinator protocol from
+`source/shared`. It has its own `package.json` and deploys with
+`.github/workflows/deploy-grokbot.yml`.
+
 ## What is in the repository?
 
 The checked-in tree contains the reviewed reconstruction, tests, manifests,

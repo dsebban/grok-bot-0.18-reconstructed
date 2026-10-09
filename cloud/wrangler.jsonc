@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "grokbot",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  // Workers AI, and Anthropic/OpenAI/xAI models through AI Gateway (no keys needed).
+  "ai": { "binding": "AI", "remote": true },
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/agents/*", "/__reconstructed_health"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "GrokBot", "class_name": "GrokBot" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GrokBot"] }],
+  "observability": { "enabled": true }
+}

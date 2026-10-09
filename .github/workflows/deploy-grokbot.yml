@@ -1,0 +1,225 @@
+# Deploys GrokBot Cloud (cloud/) to Cloudflare: the Grok Bot UI plus bots
+# powered by pi-durable in Durable Objects, all in one Worker.
+#
+#   verify  typecheck, workerd tests, and the browser e2e suite (shipped UI)
+#   deploy  `wrangler deploy` with secrets in the same version, then a smoke test
+#
+# The UI is the checksum-pinned Grok Bot 0.18.0 renderer with main's Router
+# patch (what the macOS package ships). It is hydrated at build time from the
+# Git LFS copy of the DMG and cached by its SHA-256, so LFS bandwidth is used
+# only when the cache is cold. It is never committed.
+#
+# Configure Settings → Environments → "cloudflare-production":
+#   secrets  CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID  (required)
+#            GROKBOT_TOKEN  (strongly recommended: the deployment serves Anysphere's renderer)
+#            OPENROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY  (optional)
+#   vars     GROKBOT_DEFAULT_MODEL  (optional) model behind Router → "Cursor"
+#            GROKBOT_URL            (optional) public URL when on a custom domain
+#            GROKBOT_UI             (optional) "reconstructed" to serve frontend/ instead
+
+name: Deploy GrokBot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloud/**"
+      - "frontend/**"
+      - "source/shared/**"
+      - "scripts/lib/router-renderer-patch.mjs"
+      - ".github/workflows/deploy-grokbot.yml"
+  workflow_dispatch:
+    inputs:
+      skip_e2e:
+        description: Skip the browser e2e suite (unit tests still run)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-grokbot-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: cloud
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.28.0"
+  # main's pinned 0.18.0 DMG (scripts/lib/config.mjs dmgSha256).
+  DMG_SHA256: a253ccd8aab01e083f9812a0264354c5034d8ba7f0610bbb557e82ae77d203eb
+  GROKBOT_UI: ${{ vars.GROKBOT_UI || 'shipped' }}
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the hydrated renderer
+        id: renderer
+        if: env.GROKBOT_UI == 'shipped'
+        uses: actions/cache@v4
+        with:
+          path: cloud/.renderer
+          key: grokbot-renderer-${{ env.DMG_SHA256 }}-${{ hashFiles('scripts/lib/router-renderer-patch.mjs', 'cloud/scripts/hydrate-renderer.mjs') }}
+      - name: Fetch the pinned DMG (cache miss only)
+        if: env.GROKBOT_UI == 'shipped' && steps.renderer.outputs.cache-hit != 'true'
+        working-directory: .
+        run: |
+          git lfs install --local
+          git lfs pull --include="research-archives/original/0.18.0/macos-arm64/*"
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y -qq 7zip >/dev/null; then
+            sudo apt-get install -y -qq p7zip-full >/dev/null
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: cloud/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Hydrate the shipped renderer
+        if: env.GROKBOT_UI == 'shipped'
+        run: node scripts/hydrate-renderer.mjs
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Durable Object tests (workerd)
+        run: pnpm test
+      - name: Install Chromium
+        if: ${{ !inputs.skip_e2e }}
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: E2E (wrangler dev + Chromium)
+        if: ${{ !inputs.skip_e2e }}
+        run: node e2e/run.mjs
+      - name: Upload e2e artifacts
+        if: ${{ failure() && !inputs.skip_e2e }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            cloud/e2e/artifacts/*.png
+            cloud/e2e/artifacts/*.json
+            cloud/e2e/artifacts/*.log
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: cloudflare-production
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check configuration
+        working-directory: .
+        env:
+          HAS_GROKBOT_TOKEN: ${{ secrets.GROKBOT_TOKEN != '' }}
+        run: |
+          missing=()
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing+=(CLOUDFLARE_API_TOKEN)
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing secrets in the cloudflare-production environment: ${missing[*]}"
+            exit 1
+          fi
+          if [ "$HAS_GROKBOT_TOKEN" != "true" ]; then
+            echo "::warning::GROKBOT_TOKEN is not set: anyone with the URL can use the bot, your Workers AI quota, and download the Grok Bot renderer."
+          fi
+      - uses: actions/checkout@v4
+      - name: Restore the hydrated renderer
+        id: renderer
+        if: env.GROKBOT_UI == 'shipped'
+        uses: actions/cache@v4
+        with:
+          path: cloud/.renderer
+          key: grokbot-renderer-${{ env.DMG_SHA256 }}-${{ hashFiles('scripts/lib/router-renderer-patch.mjs', 'cloud/scripts/hydrate-renderer.mjs') }}
+      - name: Fetch the pinned DMG (cache miss only)
+        if: env.GROKBOT_UI == 'shipped' && steps.renderer.outputs.cache-hit != 'true'
+        working-directory: .
+        run: |
+          git lfs install --local
+          git lfs pull --include="research-archives/original/0.18.0/macos-arm64/*"
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y -qq 7zip >/dev/null; then
+            sudo apt-get install -y -qq p7zip-full >/dev/null
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: cloud/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build Worker and UI
+        run: pnpm build
+      - name: Write secrets file
+        env:
+          GROKBOT_TOKEN: ${{ secrets.GROKBOT_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          node -e '
+            const names = ["GROKBOT_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
+            const secrets = Object.fromEntries(names.filter((n) => process.env[n]).map((n) => [n, process.env[n]]));
+            require("fs").writeFileSync(process.env.RUNNER_TEMP + "/grokbot-secrets.json", JSON.stringify(secrets), { mode: 0o600 });
+            console.log("Secrets to upload: " + (Object.keys(secrets).join(", ") || "none"));
+          '
+      - name: Deploy with Wrangler
+        id: deploy
+        env:
+          DEFAULT_MODEL: ${{ vars.GROKBOT_DEFAULT_MODEL }}
+          URL_OVERRIDE: ${{ vars.GROKBOT_URL }}
+        run: |
+          args=(deploy --secrets-file "$RUNNER_TEMP/grokbot-secrets.json")
+          [ -n "$DEFAULT_MODEL" ] && args+=(--var "DEFAULT_MODEL:$DEFAULT_MODEL")
+          pnpm exec wrangler "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/wrangler-deploy.log"
+          status=${PIPESTATUS[0]}
+          rm -f "$RUNNER_TEMP/grokbot-secrets.json"
+          [ "$status" -eq 0 ] || exit "$status"
+          url="$URL_OVERRIDE"
+          if [ -z "$url" ]; then
+            url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/wrangler-deploy.log" | head -n1 || true)
+          fi
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+          echo "Worker URL: ${url:-unknown (set the GROKBOT_URL variable for custom domains)}"
+      - name: Smoke test
+        if: ${{ steps.deploy.outputs.url != '' }}
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS "$URL/api/health" | grep -q '"ok":true'; then
+              curl -fsS "$URL/api/config" | head -c 400; echo
+              curl -fsS "$URL/" | grep -q '<div id="root">' && echo "UI served at $URL"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::$URL/api/health did not answer"
+          exit 1
+      - name: Summary
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          {
+            echo "### GrokBot Cloud"
+            echo "- Worker (Grok Bot UI + pi-durable bots): ${URL:-see the deploy log}"
+            echo "- UI: $GROKBOT_UI"
+          } >> "$GITHUB_STEP_SUMMARY"
