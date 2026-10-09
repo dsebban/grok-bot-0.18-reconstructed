@@ -356,7 +356,9 @@ export class GrokBot extends DurableObject<Env> implements CoordinatorHost {
   }
 
   #automationsChanged(agentId: AgentId): void {
-    this.coordinator.broadcast("automations", { agentId, automations: this.#automations(agentId) });
+    // The coordinator family is "agents-automation" (the host's "automations"
+    // channel; source/node-agent-coordinator/gateway/gateway-event-families.ts).
+    this.coordinator.broadcast("agents-automation", { agentId, automations: this.#automations(agentId) });
   }
 
   #automations(agentId?: AgentId) {

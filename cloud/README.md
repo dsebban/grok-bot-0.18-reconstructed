@@ -119,21 +119,26 @@ To deploy by hand: `npx wrangler login && pnpm run deploy && npx wrangler secret
 ```sh
 pnpm typecheck   # web bridge (DOM) and Worker (workers-types), including the reused frontend/ and source/ files
 pnpm test        # 20 workerd tests: the coordinator protocol over a real WebSocket, checked with the renderer's own projections
-node e2e/run.mjs # 10 browser steps against wrangler dev (GROKBOT_UI=reconstructed: 9)
+node e2e/run.mjs # every browser scenario against wrangler dev (GROKBOT_UI=reconstructed for frontend/)
+node e2e/run.mjs --no-build --only unread,sections
 ```
 
-The e2e suite covers:
+[`.github/workflows/grokbot-e2e.yml`](../.github/workflows/grokbot-e2e.yml)
+runs all of it on pull requests, for both UIs. The scenarios, in
+`e2e/scenarios/`:
 
-- onboarding and chat;
-- memory carried across turns and bots;
-- reloading mid-answer;
-- a reminder fired by the Durable Object alarm;
-- creating a bot from the To: picker;
-- Settings → Router, including saving a key;
-- `SIGKILL` of the server mid-answer, after which the answer resumes, with
-  the interrupted partial answer replaced by the retry;
-- another `SIGKILL`, after which the UI reconnects on its own and a message
-  typed straight away is delivered.
+| Scenario | Covers | UIs |
+| --- | --- | --- |
+| `core` | onboarding, chat, memory, reload mid-answer, alarm reminder, To: picker, Settings → Router, `SIGKILL` mid-answer (one answer per turn), reconnect and a message typed straight away | both |
+| `bots` | several bots, help, memory/time/files tools, memory shared across bots, separate transcripts, follow-ups queued while busy | shipped |
+| `manage` | pin and unpin, unread and read on open, Edit Profile, duplicate with history, hide, delete, search, the same sidebar in a fresh browser | shipped |
+| `routines` | one-shot and recurring routines from chat, list and cancel, a chat-made routine appearing live in the Routines pane, create / test run / pause / delete in the pane | shipped |
+| `restart` | graceful and `SIGKILL` restarts with the UI open, persistence of bots, hidden flags, transcripts, pins and memory, routines across a crash | shipped |
+| `tabs` | two tabs in sync, light theme at phone width | shipped |
+| `unread` | selection reports (cached switches too), visible vs background chats, reload, restart, hidden tabs | both |
+| `sections` | first section on a fresh sidebar, every bot still listed, sections in a fresh browser | both |
+
+The reconstruction runs the scenarios its composer allows (see above).
 
 ## Files
 

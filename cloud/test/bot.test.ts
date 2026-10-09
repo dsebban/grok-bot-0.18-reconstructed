@@ -449,7 +449,7 @@ describe("routines", () => {
       return rows[0]!.runs[0]?.status === "ok" && rows;
     });
     expect(after[0]!.runs).toHaveLength(1);
-    expect(client.events.some((event) => event.family === "automations")).toBe(true);
+    expect(client.events.some((event) => event.family === "agents-automation")).toBe(true);
 
     await client.call("setAgentAutomationEnabled", { id: agent.id, automationId: routine.id, isEnabled: false });
     expect((await client.call<Array<{ isEnabled: boolean }>>("getAgentAutomations", { id: agent.id }))[0]!.isEnabled).toBe(false);

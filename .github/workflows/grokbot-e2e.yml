@@ -1,0 +1,148 @@
+# GrokBot Cloud (cloud/): typecheck, workerd tests, and the full browser e2e
+# suite against `wrangler dev` on the offline demo model, for both UIs:
+#
+#   shipped        the checksum-pinned 0.18.0 renderer with main's Router patch
+#                  (hydrated from the Git LFS DMG; cached by its SHA-256)
+#   reconstructed  main's readable reconstruction in frontend/
+#
+# Scenarios live in cloud/e2e/scenarios/: core, bots, manage, routines,
+# restart, tabs, unread, sections. Screenshots of failed steps, results.json
+# and the wrangler log are uploaded as artifacts.
+
+name: GrokBot e2e
+
+on:
+  pull_request:
+    paths:
+      - "cloud/**"
+      - "frontend/**"
+      - "source/shared/**"
+      - "scripts/lib/router-renderer-patch.mjs"
+      - ".github/workflows/grokbot-e2e.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cloud/**"
+      - "frontend/**"
+      - "source/shared/**"
+      - "scripts/lib/router-renderer-patch.mjs"
+      - ".github/workflows/grokbot-e2e.yml"
+  workflow_dispatch:
+    inputs:
+      only:
+        description: Comma-separated scenarios to run (default all)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grokbot-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: cloud
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.28.0"
+  # main's pinned 0.18.0 DMG (scripts/lib/config.mjs dmgSha256).
+  DMG_SHA256: a253ccd8aab01e083f9812a0264354c5034d8ba7f0610bbb557e82ae77d203eb
+
+jobs:
+  unit:
+    name: Typecheck and workerd tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: cloud/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Durable Object tests (workerd)
+        run: pnpm test
+
+  e2e:
+    name: e2e (${{ matrix.ui }} UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        ui: [shipped, reconstructed]
+    env:
+      GROKBOT_UI: ${{ matrix.ui }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the hydrated renderer
+        id: renderer
+        if: matrix.ui == 'shipped'
+        uses: actions/cache@v4
+        with:
+          path: cloud/.renderer
+          key: grokbot-renderer-${{ env.DMG_SHA256 }}-${{ hashFiles('scripts/lib/router-renderer-patch.mjs', 'cloud/scripts/hydrate-renderer.mjs') }}
+      - name: Fetch the pinned DMG (cache miss only)
+        if: matrix.ui == 'shipped' && steps.renderer.outputs.cache-hit != 'true'
+        working-directory: .
+        run: |
+          git lfs install --local
+          git lfs pull --include="research-archives/original/0.18.0/macos-arm64/*"
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y -qq 7zip >/dev/null; then
+            sudo apt-get install -y -qq p7zip-full >/dev/null
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: cloud/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Hydrate the shipped renderer
+        if: matrix.ui == 'shipped'
+        run: node scripts/hydrate-renderer.mjs
+      - name: Install Chromium
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: Run every e2e scenario
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          if [ -n "$ONLY" ]; then node e2e/run.mjs --only "$ONLY"; else node e2e/run.mjs; fi
+      - name: Summary
+        if: always()
+        run: |
+          node -e '
+            const fs = require("fs");
+            const file = "e2e/artifacts/results.json";
+            if (!fs.existsSync(file)) process.exit(0);
+            const results = JSON.parse(fs.readFileSync(file, "utf8"));
+            const passed = results.filter((r) => r.ok).length;
+            const lines = [`### e2e (${process.env.GROKBOT_UI} UI): ${passed}/${results.length} steps passed`, "", "| | Scenario | Step |", "| --- | --- | --- |"];
+            for (const r of results) lines.push(`| ${r.ok ? "✅" : "❌"} | ${r.scenario} | ${r.name.replace(/\|/g, "\\|")} |`);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+          '
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.ui }}
+          path: |
+            cloud/e2e/artifacts/*.png
+            cloud/e2e/artifacts/*.json
+            cloud/e2e/artifacts/*.log
+          if-no-files-found: ignore
+          retention-days: 7

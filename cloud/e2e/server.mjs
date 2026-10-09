@@ -25,11 +25,14 @@ export function startServer({ port, persistTo, logFile, configPath }) {
   const log = fs.createWriteStream(logFile, { flags: "a" });
   child.stdout.pipe(log);
   child.stderr.pipe(log);
+  const exited = new Promise((resolve) => child.once("exit", resolve));
   return {
+    exited,
     stop(signal = "SIGTERM") {
       try {
         process.kill(-child.pid, signal);
       } catch {}
+      return exited;
     }
   };
 }

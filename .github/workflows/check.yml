@@ -13,6 +13,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # The installer-inventory test reads the preserved installers, which are
+      # Git LFS objects; restore them from cache and pull only on a miss.
+      - name: Identify the LFS objects
+        id: lfs
+        run: echo "id=$(git lfs ls-files --long | cut -d' ' -f1 | sort | sha256sum | cut -c1-32)" >> "$GITHUB_OUTPUT"
+      - name: Restore LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ steps.lfs.outputs.id }}
+      - name: Check out LFS files
+        run: git lfs pull
       - uses: actions/setup-node@v4
         with:
           node-version: 26.5.0

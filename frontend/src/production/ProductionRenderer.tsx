@@ -2605,7 +2605,9 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
   useEffect(() => {
     routinesController.reset();
     if (client == null || account?.kind !== "logged-in") return () => {};
-    const stopAutomations = client.subscribe("automations", (value) => {
+    // The coordinator event family, as the shipped renderer subscribes to it
+    // ("automations" is the host's internal channel name).
+    const stopAutomations = client.subscribe("agents-automation", (value) => {
       if (typeof value !== "object" || value == null || Array.isArray(value)) return;
       const event = value as { agentId?: unknown; automations?: unknown };
       if (typeof event.agentId !== "string" || !Array.isArray(event.automations)) return;
